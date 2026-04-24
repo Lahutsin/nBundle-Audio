@@ -39,3 +39,9 @@
 
 # debug information files
 *.dwo
+
+# Build directories
+**/build/
+
+# Generated LUT header (very large, should not be tracked)
+JUCE/Source/Generated/NEQCoefficientLut.h
