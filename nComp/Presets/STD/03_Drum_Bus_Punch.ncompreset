@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ncomp_params>
+  <PARAM id="input1" value="1.5000"/>
+  <PARAM id="input2" value="1.5000"/>
+  <PARAM id="output1" value="0.0000"/>
+  <PARAM id="output2" value="0.0000"/>
+  <PARAM id="threshold1" value="-16.0000"/>
+  <PARAM id="threshold2" value="-16.0000"/>
+  <PARAM id="ratio1" value="3.7000"/>
+  <PARAM id="ratio2" value="3.7000"/>
+  <PARAM id="attack1" value="20.0000"/>
+  <PARAM id="attack2" value="20.0000"/>
+  <PARAM id="release1" value="120.0000"/>
+  <PARAM id="release2" value="120.0000"/>
+  <PARAM id="mix" value="88.0000"/>
+  <PARAM id="character" value="0"/>
+  <PARAM id="linkAmount" value="100.0000"/>
+  <PARAM id="sidechainHpf" value="115.0000"/>
+  <PARAM id="sidechainTilt" value="1.0000"/>
+  <PARAM id="link" value="0"/>
+  <PARAM id="mslr" value="0"/>
+  <PARAM id="power" value="0"/>
+  <PARAM id="autoGain" value="0"/>
+  <PARAM id="ab" value="0"/>
+  <PARAM id="sidechain" value="0"/>
+  <PARAM id="sidechainListen" value="0"/>
+  <PARAM id="meterL" value="0.0000"/>
+  <PARAM id="meterR" value="0.0000"/>
+</ncomp_params>

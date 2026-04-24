@@ -1,0 +1,15 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Build nComp JUCE",
+			"type": "shell",
+			"command": "cmake -S JUCE -B JUCE/build -DCMAKE_BUILD_TYPE=Release && cmake --build JUCE/build -j8",
+			"isBackground": false,
+			"problemMatcher": [
+				"$gcc"
+			],
+			"group": "build"
+		}
+	]
+}
