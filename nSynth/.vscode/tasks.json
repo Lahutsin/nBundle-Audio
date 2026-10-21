@@ -1,0 +1,21 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Build nSynth JUCE",
+			"type": "shell",
+			"command": "cmake -S JUCE -B JUCE/build -DCMAKE_BUILD_TYPE=Release && cmake --build JUCE/build -j8",
+			"isBackground": false,
+			"problemMatcher": ["$gcc"],
+			"group": "build"
+		},
+		{
+			"label": "Test nSynth",
+			"type": "shell",
+			"command": "cmake --build JUCE/build --target nSynthTests -j8 && ./JUCE/build/nSynthTests_artefacts/Release/nSynthTests",
+			"isBackground": false,
+			"problemMatcher": ["$gcc"],
+			"group": "test"
+		}
+	]
+}
