@@ -18,9 +18,9 @@ public:
             expectWithinAbsoluteError (matrix.getFixedAmount (ModSource::lfo2, ModTarget::crossMod), 1.0f, 1.0e-7f);
             expectWithinAbsoluteError (empty->fixed[(int) ModSource::lfo2][(int) ModTarget::crossMod], 0.0f, 1.0e-7f);
             expect (matrix.hasSource (ModSource::lfo2));
-            expect (matrix.setDirectAmount (ModSource::velocity, DirectModTarget::delaySend, -1.4f));
-            expectWithinAbsoluteError (matrix.getDirectAmount (ModSource::velocity, DirectModTarget::delaySend), -1.0f, 1.0e-7f);
-            expect (! matrix.setDirectAmount (ModSource::velocity, DirectModTarget::delaySend, std::numeric_limits<float>::quiet_NaN()));
+            expect (matrix.setDirectAmount (ModSource::velocity, DirectModTarget::delayMix, -1.4f));
+            expectWithinAbsoluteError (matrix.getDirectAmount (ModSource::velocity, DirectModTarget::delayMix), -1.0f, 1.0e-7f);
+            expect (! matrix.setDirectAmount (ModSource::velocity, DirectModTarget::delayMix, std::numeric_limits<float>::quiet_NaN()));
         }
 
         beginTest ("source and target clear operations affect exactly their routes");

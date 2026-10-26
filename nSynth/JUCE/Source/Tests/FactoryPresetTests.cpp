@@ -16,11 +16,12 @@ public:
     {
         const juce::File root (NSYNTH_FACTORY_PRESETS_DIR);
 
-        beginTest ("eight original factory categories each contain sixteen valid layer patches");
+        beginTest ("seven factory categories each contain sixteen valid layer patches");
         {
             static constexpr const char* categoryNames[] = {
-                "Pads", "Leads", "Bass", "Keys", "Plucks", "Brass-Strings", "FX", "Arp-Seq"
+                "Pads", "Leads", "Bass", "Keys", "Plucks", "Brass-Strings", "FX"
             };
+            expect (! root.getChildFile ("Patches").getChildFile ("Arp-Seq").exists());
             NSynthAudioProcessor processor;
             int total = 0;
             for (const auto* category : categoryNames)
@@ -46,7 +47,7 @@ public:
                     ++total;
                 }
             }
-            expectEquals (total, 128);
+            expectEquals (total, 112);
         }
 
         beginTest ("at least sixteen factory performances are discovered and load successfully");

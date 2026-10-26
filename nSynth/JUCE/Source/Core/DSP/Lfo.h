@@ -64,10 +64,8 @@ namespace rates
 
     // LFO1 synced divisions in beats, slow -> fast.
     const std::array<double, 16>& lfo1SyncBeats() noexcept;
-    // Delay synced divisions in beats, short -> long.
-    const std::array<double, 16>& delaySyncBeats() noexcept;
-    // Arp/seq clock divider in beats.
-    double clockDivBeats (int index) noexcept;
+    // Delay division (DelayDivision index, 1/64 .. 1/1) in beats.
+    double delayDivisionBeats (int index) noexcept;
 
     int divisionIndex (float fader, int count) noexcept;
 }

@@ -11,8 +11,8 @@ public:
     void runTest() override
     {
         beginTest ("registry sizes are the documented ones");
-        expectEquals ((int) getLayerParamSpecs().size(), 81);
-        expectEquals ((int) getPerformanceParamSpecs().size(), 16);
+        expectEquals ((int) getLayerParamSpecs().size(), 98);
+        expectEquals ((int) getPerformanceParamSpecs().size(), 15);
 
         beginTest ("suffixes unique, every spec exists for both layers + performance in the APVTS");
         {
@@ -28,7 +28,7 @@ public:
             }
             for (auto& spec : getPerformanceParamSpecs())
                 expect (s.getParameter (perfParamId (spec.suffix)) != nullptr, spec.suffix);
-            expectEquals (proc.getParameters().size(), 2 * 81 + 16);
+            expectEquals (proc.getParameters().size(), 2 * 98 + 15);
         }
 
         beginTest ("choice lists match the DSP enums");
@@ -48,9 +48,18 @@ public:
         expectEquals (choices (pid::lfo2Trigger), toInt (Lfo2Trigger::on) + 1);
         expectEquals (choices (pid::voiceMode), toInt (VoiceMode::poly2) + 1);
         expectEquals (choices (pid::unisonSize), toInt (UnisonSize::fifthOctave) + 1);
-        expectEquals (choices (pid::arpMode), toInt (ArpMode::seq) + 1);
-        expectEquals (choices (pid::clockDiv), toInt (ClockDiv::eighthTriplet) + 1);
+        expectEquals (choices (pid::velMode), toInt (VelocityMode::fixed) + 1);
+        expectEquals (choices (pid::binaural), toInt (BinauralMode::x2) + 1);
         expectEquals (choices (pid::chorus), toInt (ChorusMode::oneTwo) + 1);
+        expectEquals (choices (pid::delayDivision), toInt (DelayDivision::d1_1) + 1);
+        expectEquals (findLayerSpec (pid::delayDivision)->choices[toInt (DelayDivision::d1_4)], juce::String ("1/4"));
+        expectEquals (findLayerSpec (pid::delayDivision)->choices[toInt (DelayDivision::d1_8D)], juce::String ("1/8 D"));
+
+        beginTest ("sequencer, arpeggiator and oversampling selection are gone");
+        for (auto* removed : { "arp_on", "arp_mode", "arp_range", "clk_div", "swing", "seq_slot", "delay_send", "delay_time" })
+            expect (findLayerSpec (removed) == nullptr, removed);
+        for (auto& spec : getPerformanceParamSpecs())
+            expect (juce::String (spec.suffix) != "quality");
 
         beginTest ("defaults reproduce the init patch (single sawtooth oscillator)");
         {
@@ -69,8 +78,14 @@ public:
             expect (snap.vcaEnvMode == VcaEnvMode::env2);
             expectEquals (snap.env2Sustain, 1.0f);
             expect (snap.voiceMode == VoiceMode::poly1);   // default voice mode
-            expect (snap.binaural);                        // binaural is the default
-            expect (snap.clockDiv == ClockDiv::sixteenth); // CLK DIV reset value
+            expect (snap.binaural == BinauralMode::x2);    // binaural x2 is the default
+            expect (snap.velMode == VelocityMode::dynamic);
+            expectEquals (snap.velFixed, 100);
+            expect (snap.chorus == ChorusMode::off);      // effects start dry
+            expectEquals (snap.delayMix, 0.0f);
+            expectEquals (snap.reverbMix, 0.0f);
+            expect (snap.delaySync);
+            expect (snap.delayDivision == DelayDivision::d1_4);
         }
 
         beginTest ("hardware CC numbers are unique per layer and valid");
@@ -121,6 +136,12 @@ public:
             auto& tune = *findLayerSpec (pid::dds2Tune);
             expectEquals (formatValue (tune, 7.0f), juce::String ("+7.00 st"));
             expectWithinAbsoluteError (parseValue (tune, "99"), 7.0f, 1.0e-6f); // clamped to range
+            auto& delayMs = *findLayerSpec (pid::delayMs);
+            expectEquals (formatValue (delayMs, 350.0f), juce::String ("350 ms"));
+            expectEquals (formatValue (delayMs, 1200.0f), juce::String ("1.20 s"));
+            expectWithinAbsoluteError (parseValue (delayMs, "1.2 s"), 1200.0f, 0.01f);
+            expectWithinAbsoluteError (parseValue (delayMs, "250 ms"), 250.0f, 0.01f);
+            expectEquals (formatValue (*findLayerSpec (pid::chorusRate), 0.5f), juce::String ("0.50 Hz"));
             auto& mix = *findLayerSpec (pid::mix);
             expectEquals (formatValue (mix, 0.5f), juce::String ("50 %"));
             expectWithinAbsoluteError (parseValue (mix, "25 %"), 0.25f, 1.0e-6f);

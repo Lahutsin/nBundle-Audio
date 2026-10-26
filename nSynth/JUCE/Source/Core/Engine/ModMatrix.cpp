@@ -231,7 +231,7 @@ const char* ModMatrix::getDirectTargetName (DirectModTarget target) noexcept
         "VCA ENV Level", "VCA LFO1 Amount", "VCA DDS2 Amount", "ENV1 Attack", "ENV1 Sustain",
         "ENV1 Release", "ENV2 Attack", "ENV2 Decay", "ENV2 Sustain", "ENV2 Release",
         "LFO1 Delay", "LFO1 LR Phase", "LFO2 Rate", "LFO2 Delay", "DDS Mod LFO1 Amount",
-        "PW/Detune", "Portamento", "Delay Send", "Delay Feedback"
+        "PW/Detune", "Portamento", "Delay Mix", "Delay Feedback"
     };
     return inRange (target, ModMatrixData::directTargetCount) ? names[(int) target] : "Invalid";
 }

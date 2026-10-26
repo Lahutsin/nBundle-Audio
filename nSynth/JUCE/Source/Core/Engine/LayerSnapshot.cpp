@@ -57,7 +57,6 @@ void LayerParamReader::read (LayerSnapshot& o) const noexcept
     o.vcaLfo1 = f();
     o.vcaDds2 = f();
     o.vcaEnvMode = (VcaEnvMode) e();
-    o.vcaDynamics = (TriState) e();
 
     o.env1AttackHold = f();
     o.env1Attack = f();
@@ -78,6 +77,7 @@ void LayerParamReader::read (LayerSnapshot& o) const noexcept
     o.lfo1Delay = f();
     o.lfo1LrPhase = f();
     o.lfo1Mode = (Lfo1Mode) e();
+    o.lfo1Sync = b();
 
     o.lfo2Wave = (Lfo2Wave) e();
     o.lfo2Rate = f();
@@ -96,22 +96,40 @@ void LayerParamReader::read (LayerSnapshot& o) const noexcept
     o.voiceMode = (VoiceMode) e();
     o.unison = b();
     o.unisonSize = (UnisonSize) e();
-    o.binaural = b();
-
-    o.arpOn = b();
-    o.arpMode = (ArpMode) e();
-    o.arpRange = e();
-    o.clockDiv = (ClockDiv) e();
-    o.clockSync = b();
-    o.swing = e();
-    o.seqSlot = e();
+    o.binaural = (BinauralMode) e();
+    o.binauralDetune = f();
     o.hold = b();
+    o.velMode = (VelocityMode) e();
+    o.velFixed = e();
+    o.velCurve = f();
+    o.velSens = f();
 
     o.chorus = (ChorusMode) e();
-    o.delayTime = f();
+    o.chorusRate = f();
+    o.chorusDepth = f();
+    o.chorusDelayMs = f();
+    o.chorusFeedback = f();
+    o.chorusWidth = f();
+    o.chorusMix = f();
+
+    o.delaySync = b();
+    o.delayMs = f();
+    o.delayDivision = (DelayDivision) e();
     o.delayFeedback = f();
-    o.delaySend = f();
+    o.delayMix = f();
+    o.delayPingPong = b();
     o.delayFreeze = b();
+    o.delayLowCutHz = f();
+    o.delayHighCutHz = f();
+
+    o.reverbMix = f();
+    o.reverbSize = f();
+    o.reverbDecay = f();
+    o.reverbPreDelayMs = f();
+    o.reverbDampingHz = f();
+    o.reverbLowCutHz = f();
+    o.reverbWidth = f();
+    o.reverbModulation = f();
     jassert (idx == values.size());
 }
 
@@ -146,7 +164,6 @@ void PerformanceParamReader::read (PerformanceSnapshot& o) const noexcept
     o.ribbon = f();
     o.modLever = f();
     o.expression = f();
-    o.quality = (Quality) e();
     o.midiRouting = (MidiRouting) e();
     o.dualPedal = f() > 0.5f;
     o.hardwareCCMap = f() > 0.5f;

@@ -34,7 +34,6 @@ NSynthAudioProcessor::NSynthAudioProcessor()
         patchBaseline[(size_t) toInt (layer)] = captureLayerValues (layer);
         patchMatrixBaseline[(size_t) toInt (layer)] = *engine.modMatrix (layer).snapshot();
         patchWaveBaseline[(size_t) toInt (layer)] = engine.getWaveBank().toValueTree();
-        patchSequenceBaseline[(size_t) toInt (layer)] = *engine.sequenceBank (layer).snapshot();
     }
 
     auto root = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory)
@@ -132,12 +131,11 @@ void NSynthAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     auto state = apvts.copyState();
     engine.appendModMatrixState (state);
-    engine.appendSequenceState (state);
     engine.appendWaveBankState (state);
     engine.appendMidiInputState (state);
     state.setProperty ("editorScale", editorScale.load(), nullptr);
     state.setProperty ("presetName", currentPresetName, nullptr);
-    state.setProperty ("stateVersion", 5, nullptr);
+    state.setProperty ("stateVersion", 6, nullptr);
     if (auto xml = state.createXml())
         copyXmlToBinary (*xml, destData);
 }
@@ -155,11 +153,10 @@ void NSynthAudioProcessor::setStateInformation (const void* data, int sizeInByte
         return;
     if (! engine.restoreModMatrixState (tree))
         return;
-    if (! engine.restoreSequenceState (tree))
-        return;
     if (! engine.restoreWaveBankState (tree))
         return;
 
+    removeLegacyChildren (tree);
     editorScale = (float) tree.getProperty ("editorScale", 1.0f);
     currentPresetName = tree.getProperty ("presetName", "Init").toString();
     apvts.replaceState (tree);
@@ -171,7 +168,6 @@ void NSynthAudioProcessor::setStateInformation (const void* data, int sizeInByte
         patchWaveBaseline[index] = getWaveBankState (tree);
         if (! patchWaveBaseline[index].isValid())
             patchWaveBaseline[index] = engine.getWaveBank().toValueTree();
-        patchSequenceBaseline[index] = *engine.sequenceBank (layer).snapshot();
         patchNames[index] = "Session";
         patchCompareActive[index] = false;
     }
@@ -184,11 +180,9 @@ void NSynthAudioProcessor::initLayer (Layer layer)
             p->setValueNotifyingHost (p->getDefaultValue());
     patchNames[(size_t) toInt (layer)] = "Init";
     engine.modMatrix (layer).clearAll();
-    engine.sequenceBank (layer).clearAll();
     patchBaseline[(size_t) toInt (layer)] = captureLayerValues (layer);
     patchMatrixBaseline[(size_t) toInt (layer)] = *engine.modMatrix (layer).snapshot();
     patchWaveBaseline[(size_t) toInt (layer)] = engine.getWaveBank().toValueTree();
-    patchSequenceBaseline[(size_t) toInt (layer)] = *engine.sequenceBank (layer).snapshot();
     patchCompareActive[(size_t) toInt (layer)] = false;
 }
 
@@ -202,7 +196,6 @@ void NSynthAudioProcessor::copyLayer (Layer from, Layer to)
             dst->setValueNotifyingHost (src->getValue());
     }
     engine.modMatrix (to).restoreSnapshot (*engine.modMatrix (from).snapshot());
-    engine.sequenceBank (to).restoreSnapshot (*engine.sequenceBank (from).snapshot());
     patchNames[(size_t) toInt (to)] = "Copied";
     patchCompareActive[(size_t) toInt (to)] = false;
 }
@@ -239,6 +232,14 @@ juce::ValueTree NSynthAudioProcessor::getWaveBankState (const juce::ValueTree& r
     return result;
 }
 
+void NSynthAudioProcessor::removeLegacyChildren (juce::ValueTree& root)
+{
+    // Sequencer banks from sessions saved before the sequencer was removed.
+    for (int i = root.getNumChildren() - 1; i >= 0; --i)
+        if (root.getChild (i).hasType ("SEQUENCER"))
+            root.removeChild (i, nullptr);
+}
+
 bool NSynthAudioProcessor::loadPatch (Layer layer, const juce::File& file, juce::String* error)
 {
     juce::ValueTree tree;
@@ -253,9 +254,7 @@ bool NSynthAudioProcessor::loadPatch (Layer layer, const juce::File& file, juce:
     ModMatrix stagedMatrix;
     bool hasMatrix = false;
     bool hasWaveBank = false;
-    bool hasSequenceBank = false;
     juce::ValueTree stagedWaveBank;
-    SequenceBank stagedSequenceBank;
     std::vector<float> values (getLayerParamSpecs().size(), 0.0f);
     std::vector<bool> found (values.size(), false);
     for (int childIndex = 0; childIndex < tree.getNumChildren(); ++childIndex)
@@ -281,13 +280,6 @@ bool NSynthAudioProcessor::loadPatch (Layer layer, const juce::File& file, juce:
             stagedWaveBank = child;
             continue;
         }
-        if (child.hasType ("SEQUENCER"))
-        {
-            if (hasSequenceBank || ! stagedSequenceBank.restoreFromValueTree (child, toInt (layer), error))
-                return false;
-            hasSequenceBank = true;
-            continue;
-        }
         if (! child.hasType ("PARAM"))
             continue;
         const auto id = child.getProperty ("id").toString();
@@ -307,22 +299,21 @@ bool NSynthAudioProcessor::loadPatch (Layer layer, const juce::File& file, juce:
             matched = true;
             break;
         }
-        if (! matched)
+        // Parameters of this layer that no longer exist (arp/sequencer, old FX) are skipped.
+        if (! matched && ! id.startsWith (layerPrefix (layer)))
         {
             if (error) *error = "Patch contains a parameter for the wrong layer or an unknown parameter.";
             return false;
         }
     }
 
-    if (std::find (found.begin(), found.end(), false) != found.end())
-    {
-        if (error) *error = "Patch is incomplete.";
-        return false;
-    }
+    // Parameters added after the patch was saved start from their defaults.
+    for (size_t i = 0; i < found.size(); ++i)
+        if (! found[i])
+            if (auto* parameter = apvts.getParameter (layerParamId (layer, getLayerParamSpecs()[i].suffix)))
+                values[i] = parameter->getDefaultValue();
 
     if (hasWaveBank && ! engine.restoreWaveBankState (tree, error))
-        return false;
-    if (hasSequenceBank && ! engine.restoreSequenceState (tree, error))
         return false;
     if (! hasWaveBank)
         stagedWaveBank = engine.getWaveBank().toValueTree();
@@ -335,7 +326,6 @@ bool NSynthAudioProcessor::loadPatch (Layer layer, const juce::File& file, juce:
     patchBaseline[index] = std::move (values);
     patchMatrixBaseline[index] = *engine.modMatrix (layer).snapshot();
     patchWaveBaseline[index] = stagedWaveBank;
-    patchSequenceBaseline[index] = *engine.sequenceBank (layer).snapshot();
     patchNames[index] = file.getFileNameWithoutExtension();
     patchCompareActive[index] = false;
     return true;
@@ -345,9 +335,8 @@ bool NSynthAudioProcessor::savePatch (Layer layer, const juce::File& file, juce:
 {
     juce::ValueTree tree ("NSYNTH_PATCH");
     tree.setProperty ("layer", toInt (layer), nullptr);
-    tree.setProperty ("stateVersion", 3, nullptr);
+    tree.setProperty ("stateVersion", 4, nullptr);
     tree.addChild (engine.modMatrix (layer).toValueTree (toInt (layer)), -1, nullptr);
-    engine.appendSequenceState (tree, layer);
     engine.appendWaveBankState (tree);
     for (const auto& spec : getLayerParamSpecs())
     {
@@ -369,7 +358,6 @@ bool NSynthAudioProcessor::savePatch (Layer layer, const juce::File& file, juce:
     patchBaseline[index] = captureLayerValues (layer);
     patchMatrixBaseline[index] = *engine.modMatrix (layer).snapshot();
     patchWaveBaseline[index] = engine.getWaveBank().toValueTree();
-    patchSequenceBaseline[index] = *engine.sequenceBank (layer).snapshot();
     patchNames[index] = file.getFileNameWithoutExtension();
     patchCompareActive[index] = false;
     return true;
@@ -388,8 +376,6 @@ bool NSynthAudioProcessor::isPatchDirty (Layer layer) const
     const auto& baselineMatrix = patchMatrixBaseline[(size_t) toInt (layer)];
     if (currentMatrix.fixed != baselineMatrix.fixed || currentMatrix.direct != baselineMatrix.direct)
         return true;
-    if (! (*engine.sequenceBank (layer).snapshot() == patchSequenceBaseline[(size_t) toInt (layer)]))
-        return true;
     return ! sameUserWaveState (engine.getWaveBank().toValueTree(), patchWaveBaseline[(size_t) toInt (layer)]);
 }
 
@@ -406,13 +392,10 @@ bool NSynthAudioProcessor::setPatchCompare (Layer layer, bool enabled)
         patchCompareSnapshot[index] = captureLayerValues (layer);
         patchMatrixCompareSnapshot[index] = *engine.modMatrix (layer).snapshot();
         patchWaveCompareSnapshot[index] = engine.getWaveBank().toValueTree();
-        patchSequenceCompareSnapshot[index] = *engine.sequenceBank (layer).snapshot();
         juce::ValueTree waveState ("NSYNTH_WAVE_STATE");
         waveState.addChild (patchWaveBaseline[index].createCopy(), -1, nullptr);
         if (! engine.restoreWaveBankState (waveState))
             return false;
-        engine.sequenceBank (layer).restoreSnapshot (patchSequenceBaseline[index]);
-        engine.sequenceBank (layer).restoreSnapshot (patchSequenceCompareSnapshot[index]);
         applyLayerValues (layer, patchBaseline[index]);
         engine.modMatrix (layer).restoreSnapshot (patchMatrixBaseline[index]);
         patchCompareActive[index] = true;
@@ -429,7 +412,6 @@ bool NSynthAudioProcessor::setPatchCompare (Layer layer, bool enabled)
     engine.modMatrix (layer).restoreSnapshot (patchMatrixCompareSnapshot[index]);
     patchMatrixCompareSnapshot[index] = {};
     patchWaveCompareSnapshot[index] = {};
-    patchSequenceCompareSnapshot[index] = {};
     patchCompareSnapshot[index].clear();
     patchCompareActive[index] = false;
     return true;
@@ -461,10 +443,9 @@ bool NSynthAudioProcessor::loadPerformance (const juce::File& file, juce::String
         return false;
     if (! engine.restoreModMatrixState (tree, error))
         return false;
-    if (! engine.restoreSequenceState (tree, error))
-        return false;
     if (! engine.restoreWaveBankState (tree, error))
         return false;
+    removeLegacyChildren (tree);
     const float masterVolume = apvts.getParameter (perfParamId (pid::masterVolume))->getValue();
     apvts.replaceState (tree);
     if (auto* masterParameter = apvts.getParameter (perfParamId (pid::masterVolume)))
@@ -478,7 +459,6 @@ bool NSynthAudioProcessor::loadPerformance (const juce::File& file, juce::String
         patchWaveBaseline[index] = getWaveBankState (tree);
         if (! patchWaveBaseline[index].isValid())
             patchWaveBaseline[index] = engine.getWaveBank().toValueTree();
-        patchSequenceBaseline[index] = *engine.sequenceBank (layer).snapshot();
         patchNames[index] = "Performance";
         patchCompareActive[index] = false;
     }
@@ -489,10 +469,9 @@ bool NSynthAudioProcessor::savePerformance (const juce::File& file, juce::String
 {
     auto state = apvts.copyState();
     engine.appendModMatrixState (state);
-    engine.appendSequenceState (state);
     engine.appendWaveBankState (state);
     engine.appendMidiInputState (state);
-    state.setProperty ("stateVersion", 5, nullptr);
+    state.setProperty ("stateVersion", 6, nullptr);
     if (! presetManager->saveToFile (state, file, error))
         return false;
     currentPresetName = file.getFileNameWithoutExtension();

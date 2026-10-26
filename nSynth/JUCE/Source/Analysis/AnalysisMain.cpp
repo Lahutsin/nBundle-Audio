@@ -25,7 +25,7 @@ void setPlain (NSynthAudioProcessor& processor, const juce::String& id, float va
     parameter->setValueNotifyingHost (parameter->convertTo0to1 (value));
 }
 
-std::vector<float> renderNote (int note, int quality, const char* waveform, int samples)
+std::vector<float> renderNote (int note, const char* waveform, int samples)
 {
     NSynthAudioProcessor processor;
     const auto layer = Layer::upper;
@@ -42,7 +42,6 @@ std::vector<float> renderNote (int note, int quality, const char* waveform, int 
     setPlain (processor, layerParamId (layer, pid::env2Attack), 0.001f);
     setPlain (processor, layerParamId (layer, pid::env2Sustain), 1.0f);
     setPlain (processor, layerParamId (layer, pid::env2Release), 0.1f);
-    setPlain (processor, perfParamId (pid::quality), (float) quality);
     processor.getEngine().prepare (sampleRate, blockSize, 0);
 
     std::vector<float> result;
@@ -93,7 +92,7 @@ AliasingMetrics measureDds1Aliasing()
 {
     constexpr int fftOrder = 16;
     constexpr int fftSize = 1 << fftOrder;
-    const double internalRate = sampleRate * 4.0;
+    const double internalRate = sampleRate * SynthLayer::kOversamplingFactor;
     const double frequency = 2000.0 * internalRate / fftSize;
     WaveBank bank;
     Dds1 oscillator;
@@ -158,7 +157,6 @@ ThdMetrics measureThd (const std::vector<float>& signal, size_t start, int lengt
 
 struct CpuMeasurement
 {
-    int quality { 0 };
     int workers { 0 };
     int activeVoices { 0 };
     double millisecondsPerBlock { 0.0 };
@@ -166,17 +164,16 @@ struct CpuMeasurement
     float peak { 0.0f };
 };
 
-CpuMeasurement benchmarkCpu (int quality, int requestedWorkers)
+CpuMeasurement benchmarkCpu (int requestedWorkers)
 {
     NSynthAudioProcessor processor;
-    setPlain (processor, perfParamId (pid::quality), (float) quality);
     setPlain (processor, layerParamId (Layer::upper, pid::binaural), 0.0f);
     setPlain (processor, layerParamId (Layer::upper, pid::voiceMode), toInt (VoiceMode::poly1));
     processor.getEngine().prepare (sampleRate, blockSize, requestedWorkers);
 
     juce::AudioBuffer<float> buffer (2, blockSize);
     juce::MidiBuffer midi;
-    for (int note = 0; note < 20; ++note)
+    for (int note = 0; note < SynthEngine::kNumVoices; ++note)
         midi.addEvent (juce::MidiMessage::noteOn (1, 36 + note, (juce::uint8) 100), 0);
 
     for (int block = 0; block < 32; ++block)
@@ -198,7 +195,7 @@ CpuMeasurement benchmarkCpu (int quality, int requestedWorkers)
     const auto elapsed = std::chrono::duration<double> (std::chrono::steady_clock::now() - start).count();
     const double audioDuration = (double) measuredBlocks * blockSize / sampleRate;
 
-    return { quality, processor.getEngine().getRenderWorkerCount(),
+    return { processor.getEngine().getRenderWorkerCount(),
              processor.getEngine().getActiveVoices (Layer::upper),
              1000.0 * elapsed / measuredBlocks, audioDuration / juce::jmax (elapsed, 1.0e-9), peak };
 }
@@ -206,17 +203,11 @@ CpuMeasurement benchmarkCpu (int quality, int requestedWorkers)
 bool writeReport (const juce::File& file)
 {
     constexpr int thdWindowSize = 16384;
-    const auto sine = renderNote (69, toInt (Quality::x4), "sine", 24576);
+    const auto sine = renderNote (69, "sine", 24576);
     const auto sineMetrics = measureThd (sine, 4096, thdWindowSize, 440.0);
     const auto aliasing = measureDds1Aliasing();
 
-    std::array<CpuMeasurement, 6> cpu {};
-    int index = 0;
-    for (int quality : { toInt (Quality::x2), toInt (Quality::x4), toInt (Quality::x8) })
-    {
-        cpu[(size_t) index++] = benchmarkCpu (quality, 0);
-        cpu[(size_t) index++] = benchmarkCpu (quality, -1);
-    }
+    const std::array<CpuMeasurement, 2> cpu { benchmarkCpu (0), benchmarkCpu (-1) };
 
     if (! std::isfinite (sineMetrics.thdPercent) || sineMetrics.fundamental < 1.0e-5
         || ! std::isfinite (aliasing.largestSpurDb))
@@ -237,20 +228,20 @@ bool writeReport (const juce::File& file)
            << "## Spectrum\n\n"
            << "| Signal | Fundamental | THD (H2-H10) | Largest non-harmonic bin below 20 kHz |\n"
            << "|---|---:|---:|---:|\n"
-           << "| DDS1 sine, MIDI 69, 4x | " << juce::String (sineMetrics.fundamental, 6) << " peak | "
+           << "| DDS1 sine, MIDI 69, 2x | " << juce::String (sineMetrics.fundamental, 6) << " peak | "
            << juce::String (sineMetrics.thdPercent, 4) << "% | n/a |\n"
-           << "| DDS1 saw, 4x internal rate | n/a | n/a | "
+           << "| DDS1 saw, 2x internal rate | n/a | n/a | "
            << juce::String (aliasing.largestSpurDb, 2) << " dBc at "
            << juce::String (aliasing.largestSpurHz, 1) << " Hz |\n\n"
-           << "DDS1 aliasing is measured before decimation at four times the 48 kHz host rate, using a "
+           << "DDS1 aliasing is measured before decimation at twice the 48 kHz host rate, using a "
               "bin-centred saw fundamental and the maximum inharmonic bin below 20 kHz. "
               "It uses the same audible-band spur metric as the oscillator regression test. "
               "It is a repeatable smoke metric, not a substitute for listening against the instrument.\n\n"
-           << "## 20-voice render CPU\n\n"
-           << "| Quality | Mode | Workers | Active voices | ms/block | Real-time factor | Output peak |\n"
-           << "|---|---|---:|---:|---:|---:|---:|\n";
+           << "## " << SynthEngine::kNumVoices << "-voice render CPU (2x oversampling)\n\n"
+           << "| Mode | Workers | Active voices | ms/block | Real-time factor | Output peak |\n"
+           << "|---|---:|---:|---:|---:|---:|\n";
     for (const auto& item : cpu)
-        report << "| " << (2 << item.quality) << "x | "
+        report << "| "
                << (item.workers == 0 ? "serial" : "automatic workers") << " | " << item.workers
                << " | " << item.activeVoices << " | " << juce::String (item.millisecondsPerBlock, 4)
                << " | " << juce::String (item.realtimeFactor, 2) << "x | " << juce::String (item.peak, 5) << " |\n";

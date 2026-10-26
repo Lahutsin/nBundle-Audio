@@ -26,6 +26,16 @@ juce::String shortCaption (const juce::String& name)
     if (name == "Lower Layer Detune") return "Lower Detune";
     if (name == "Performance Detune") return "Perf Detune";
     if (name == "Single Mode Layer") return "Single Layer";
+    if (name == "Chorus") return "Mode";
+    if (name == "Delay Division") return "Time";
+    if (name == "Binaural Detune") return "Bin Detune";
+    if (name == "Velocity Mode") return "Vel Mode";
+    if (name == "Static Velocity") return "Static Vel";
+    if (name == "Velocity Curve") return "Vel Curve";
+    if (name == "Velocity Sensitivity") return "Vel Sens";
+    for (auto prefix : { "Chorus ", "Delay ", "Reverb " })
+        if (name.startsWith (prefix))
+            return name.substring ((int) std::strlen (prefix));
     return name;
 }
 
@@ -186,7 +196,9 @@ ParamControl::ParamControl (juce::AudioProcessorValueTreeState& state, const juc
             combo->getProperties().set ("accent", (juce::int64) accent.getARGB());
             addChildComponent (*combo);
             comboAttachment = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (state, id, *combo);
-            if (spec.choices.size() == 3)
+            // Three-way switches, and two-way switches with short labels, are segmented buttons.
+            if (spec.choices.size() == 3
+                || (spec.choices.size() == 2 && spec.choices[0].length() <= 7 && spec.choices[1].length() <= 7))
             {
                 for (int i = 0; i < spec.choices.size(); ++i)
                 {
@@ -311,9 +323,13 @@ void ParamControl::timerCallback()
 //==============================================================================
 SectionPanel::SectionPanel (juce::String t, juce::Colour a, int cols) : title (std::move (t)), accent (a), columns (juce::jmax (1, cols)) {}
 
-void SectionPanel::add (std::unique_ptr<ParamControl> control)
+void SectionPanel::add (std::unique_ptr<ParamControl> control, bool sharesPreviousCell)
 {
     addAndMakeVisible (*control);
+    if (sharesPreviousCell && ! cells.empty())
+        cells.back().push_back (control.get());
+    else
+        cells.push_back ({ control.get() });
     controls.push_back (std::move (control));
 }
 
@@ -335,11 +351,12 @@ void SectionPanel::resized()
 {
     auto area = getLocalBounds().reduced (3, 2);
     area.removeFromTop (15);
-    const int n = (int) controls.size();
+    const int n = (int) cells.size();
     const int rows = juce::jmax (1, (n + columns - 1) / columns);
     const int cw = area.getWidth() / columns, rh = area.getHeight() / rows;
     for (int i = 0; i < n; ++i)
-        controls[(size_t) i]->setBounds (area.getX() + (i % columns) * cw, area.getY() + (i / columns) * rh, cw, rh);
+        for (auto* control : cells[(size_t) i])
+            control->setBounds (area.getX() + (i % columns) * cw, area.getY() + (i / columns) * rh, cw, rh);
 }
 
 //==============================================================================
@@ -642,290 +659,6 @@ void WaveBrowserPage::resized()
     status.setBounds (area.removeFromTop (36));
 }
 
-SequencePage::SequencePage (juce::AudioProcessorValueTreeState& apvts, SynthEngine& e, Layer initialLayer)
-    : state (apvts), engine (e), layer (initialLayer)
-{
-    setOpaque (true);
-    for (int i = 0; i < SequenceBankData::kNumSlots; ++i)
-        slotChoice.addItem ("SLOT " + juce::String (i + 1), i + 1);
-    slotChoice.onChange = [this] { chooseSlot(); };
-    addAndMakeVisible (slotChoice);
-
-    auto addSlider = [this] (juce::Slider& slider)
-    {
-        slider.setSliderStyle (juce::Slider::LinearHorizontal);
-        slider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 54, 22);
-        addAndMakeVisible (slider);
-    };
-    lengthSlider.setRange (1, Sequence::kMaxSteps, 1);
-    noteSlider.setRange (-48, 48, 1);
-    gateSlider.setRange (1, 100, 1);
-    addSlider (lengthSlider);
-    addSlider (noteSlider);
-    addSlider (gateSlider);
-    lengthSlider.onValueChange = [this]
-    {
-        engine.sequenceBank (layer).setLength (slotChoice.getSelectedId() - 1, (int) lengthSlider.getValue());
-        refreshControls();
-    };
-    noteSlider.onValueChange = [this] { commitSelectedStep(); };
-    gateSlider.onValueChange = [this] { commitSelectedStep(); };
-
-    for (auto* toggle : { &slideButton, &accentButton, &restButton, &recordButton })
-        addAndMakeVisible (*toggle);
-    slideButton.onClick = [this] { commitSelectedStep(); };
-    accentButton.onClick = [this] { commitSelectedStep(); };
-    restButton.onClick = [this] { commitSelectedStep(); };
-    recordButton.setClickingTogglesState (true);
-    recordButton.onClick = [this]
-    {
-        engine.sequenceBank (layer).setRecording (recordButton.getToggleState(),
-                                                  slotChoice.getSelectedId() - 1, selectedStep);
-        status.setText (recordButton.getToggleState() ? "Recording MIDI into selected step(s)." : "Recording stopped.",
-                        juce::dontSendNotification);
-    };
-
-    for (int i = 0; i < Sequence::kMaxSteps; ++i)
-    {
-        auto button = std::make_unique<juce::TextButton>();
-        button->setClickingTogglesState (false);
-        button->onClick = [this, i] { selectStep (i); };
-        addAndMakeVisible (*button);
-        stepButtons.push_back (std::move (button));
-    }
-
-    for (auto* button : { &clearSlotButton, &saveBankButton, &loadBankButton, &closeButton })
-        addAndMakeVisible (*button);
-    addAndMakeVisible (status);
-    for (auto* label : { &noteLabel, &gateLabel, &lengthLabel })
-    {
-        label->setColour (juce::Label::textColourId, kTextDim);
-        label->setJustificationType (juce::Justification::centredLeft);
-        addAndMakeVisible (*label);
-    }
-
-    clearSlotButton.onClick = [this]
-    {
-        engine.sequenceBank (layer).clearSlot (slotChoice.getSelectedId() - 1);
-        selectedStep = 0;
-        refreshControls();
-    };
-    saveBankButton.onClick = [this]
-    {
-        chooser = std::make_unique<juce::FileChooser> ("Save sequence bank", juce::File(), "*.nsynthseq");
-        chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::warnAboutOverwriting,
-                              [this] (const juce::FileChooser& fc)
-        {
-            const auto file = fc.getResult();
-            if (file == juce::File())
-                return;
-            const auto xml = engine.sequenceBank (layer).toValueTree (toInt (layer)).createXml();
-            if (xml == nullptr || ! file.withFileExtension (".nsynthseq").replaceWithText (xml->toString()))
-                juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Sequence save failed",
-                                                        "Could not write sequence bank file.");
-        });
-    };
-    loadBankButton.onClick = [this]
-    {
-        chooser = std::make_unique<juce::FileChooser> ("Load sequence bank", juce::File(), "*.nsynthseq");
-        chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
-                              [this] (const juce::FileChooser& fc)
-        {
-            const auto file = fc.getResult();
-            if (file == juce::File())
-                return;
-            const auto xml = juce::XmlDocument::parse (file);
-            juce::String error;
-            if (xml == nullptr
-                || ! engine.sequenceBank (layer).restoreFromValueTree (juce::ValueTree::fromXml (*xml), toInt (layer), &error))
-                juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Sequence load failed",
-                                                        error.isNotEmpty() ? error : "Invalid sequence file.");
-            else
-                refreshControls();
-        });
-    };
-    closeButton.onClick = [this]
-    {
-        engine.sequenceBank (layer).setRecording (false, 0, 0);
-        recordButton.setToggleState (false, juce::dontSendNotification);
-        if (onClose != nullptr)
-            onClose();
-    };
-
-    status.setJustificationType (juce::Justification::centred);
-    status.setColour (juce::Label::textColourId, kText);
-    setLayer (initialLayer);
-    startTimerHz (20);
-}
-
-SequencePage::~SequencePage()
-{
-    engine.sequenceBank (layer).setRecording (false, 0, 0);
-}
-
-void SequencePage::setLayer (Layer selectedLayer)
-{
-    engine.sequenceBank (layer).setRecording (false, 0, 0);
-    layer = selectedLayer;
-    recordButton.setToggleState (false, juce::dontSendNotification);
-    auto* parameter = dynamic_cast<juce::RangedAudioParameter*> (
-        state.getParameter (layerParamId (layer, pid::seqSlot)));
-    const int selectedSlot = parameter != nullptr
-        ? juce::jlimit (1, SequenceBankData::kNumSlots, (int) std::lround (parameter->getValue()))
-        : 1;
-    slotChoice.setSelectedId (selectedSlot, juce::dontSendNotification);
-    selectedStep = 0;
-    refreshControls();
-}
-
-void SequencePage::chooseSlot()
-{
-    const int slot = slotChoice.getSelectedId();
-    auto* parameter = dynamic_cast<juce::RangedAudioParameter*> (
-        state.getParameter (layerParamId (layer, pid::seqSlot)));
-    if (parameter != nullptr && slot > 0)
-        parameter->setValueNotifyingHost (parameter->convertTo0to1 ((float) slot));
-    selectedStep = 0;
-    if (recordButton.getToggleState())
-        engine.sequenceBank (layer).setRecording (true, slot - 1, selectedStep);
-    refreshControls();
-}
-
-void SequencePage::selectStep (int step)
-{
-    selectedStep = juce::jlimit (0, Sequence::kMaxSteps - 1, step);
-    if (recordButton.getToggleState())
-        engine.sequenceBank (layer).setRecording (true, slotChoice.getSelectedId() - 1, selectedStep);
-    refreshControls();
-}
-
-void SequencePage::commitSelectedStep()
-{
-    const int slot = slotChoice.getSelectedId() - 1;
-    if (! juce::isPositiveAndBelow (slot, SequenceBankData::kNumSlots))
-        return;
-    auto snapshot = engine.sequenceBank (layer).snapshot();
-    auto step = snapshot->slots[(size_t) slot].steps[(size_t) selectedStep];
-    if (step.noteCount == 0)
-    {
-        step.notes[0] = 0;
-        step.noteCount = 1;
-    }
-    step.notes[0] = (int8_t) (int) noteSlider.getValue();
-    step.rest = restButton.getToggleState();
-    step.slide = slideButton.getToggleState();
-    step.accent = accentButton.getToggleState();
-    step.gatePercent = (uint8_t) (int) gateSlider.getValue();
-    engine.sequenceBank (layer).setStep (slot, selectedStep, step);
-    refreshControls();
-}
-
-void SequencePage::refreshControls()
-{
-    const int slot = slotChoice.getSelectedId() - 1;
-    if (! juce::isPositiveAndBelow (slot, SequenceBankData::kNumSlots))
-        return;
-    const auto current = engine.sequenceBank (layer).snapshot();
-    const auto& sequence = current->slots[(size_t) slot];
-    selectedStep = juce::jmin (selectedStep, (int) sequence.length - 1);
-    if (recordButton.getToggleState())
-        engine.sequenceBank (layer).setRecording (true, slot, selectedStep);
-    lengthSlider.setValue (sequence.length, juce::dontSendNotification);
-    for (int i = 0; i < Sequence::kMaxSteps; ++i)
-    {
-        const auto& step = sequence.steps[(size_t) i];
-        juce::String text = juce::String (i + 1).paddedLeft ('0', 2);
-        if (step.rest)
-            text += " R";
-        else if (step.noteCount > 0)
-            text += " " + juce::String ((int) step.notes[0] >= 0 ? "+" : "")
-                  + juce::String ((int) step.notes[0]);
-        stepButtons[(size_t) i]->setButtonText (text);
-        stepButtons[(size_t) i]->setEnabled (i < sequence.length);
-        stepButtons[(size_t) i]->setColour (juce::TextButton::buttonColourId,
-                                            i == selectedStep ? accentForLayer (layer)
-                                                              : (step.rest ? kPanel : kPanel.brighter (0.18f)));
-    }
-    const auto& selected = sequence.steps[(size_t) selectedStep];
-    noteSlider.setValue (selected.noteCount > 0 ? selected.notes[0] : 0, juce::dontSendNotification);
-    gateSlider.setValue (selected.gatePercent, juce::dontSendNotification);
-    slideButton.setToggleState (selected.slide, juce::dontSendNotification);
-    accentButton.setToggleState (selected.accent, juce::dontSendNotification);
-    restButton.setToggleState (selected.rest, juce::dontSendNotification);
-}
-
-void SequencePage::timerCallback()
-{
-    auto& bank = engine.sequenceBank (layer);
-    SequenceBank::RecordedNote note;
-    while (bank.popRecordedNote (note))
-    {
-        auto snapshot = bank.snapshot();
-        auto step = snapshot->slots[(size_t) note.slot].steps[(size_t) note.step];
-        if (step.noteCount < SequenceStep::kMaxNotes)
-        {
-            bool duplicate = false;
-            for (int i = 0; i < (int) step.noteCount; ++i)
-                duplicate = duplicate || step.notes[(size_t) i] == note.interval;
-            if (! duplicate)
-            {
-                step.notes[(size_t) step.noteCount++] = (int8_t) note.interval;
-                step.rest = false;
-                bank.setStep (note.slot, note.step, step);
-            }
-        }
-        else
-            status.setText ("Selected step already contains 8 notes; extra MIDI notes were ignored.", juce::dontSendNotification);
-    }
-    const int dropped = bank.takeDroppedRecordCount();
-    if (dropped > 0)
-        status.setText ("MIDI record queue full; dropped " + juce::String (dropped) + " note(s).", juce::dontSendNotification);
-    else if (bank.isRecording())
-        status.setText ("Recording MIDI into the selected step.", juce::dontSendNotification);
-    refreshControls();
-}
-
-void SequencePage::resized()
-{
-    auto area = getLocalBounds().reduced (12);
-    auto header = area.removeFromTop (32);
-    slotChoice.setBounds (header.removeFromLeft (130));
-    header.removeFromLeft (8);
-    lengthLabel.setBounds (header.removeFromLeft (68));
-    lengthSlider.setBounds (header.removeFromLeft (220));
-    header.removeFromLeft (10);
-    closeButton.setBounds (header.removeFromRight (84));
-    header.removeFromRight (6);
-    saveBankButton.setBounds (header.removeFromRight (100));
-    header.removeFromRight (4);
-    loadBankButton.setBounds (header.removeFromRight (100));
-    header.removeFromRight (4);
-    clearSlotButton.setBounds (header.removeFromRight (100));
-
-    area.removeFromTop (8);
-    const int gridHeight = juce::jmax (260, area.getHeight() - 88);
-    auto grid = area.removeFromTop (gridHeight);
-    const int gap = 4, cellW = (grid.getWidth() - 7 * gap) / 8, cellH = (grid.getHeight() - 7 * gap) / 8;
-    for (int i = 0; i < Sequence::kMaxSteps; ++i)
-    {
-        const int row = i / 8, column = i % 8;
-        stepButtons[(size_t) i]->setBounds (grid.getX() + column * (cellW + gap), grid.getY() + row * (cellH + gap), cellW, cellH);
-    }
-    area.removeFromTop (8);
-    auto controls = area.removeFromTop (34);
-    noteLabel.setBounds (controls.removeFromLeft (130));
-    noteSlider.setBounds (controls.removeFromLeft (240));
-    controls.removeFromLeft (10);
-    gateLabel.setBounds (controls.removeFromLeft (54));
-    gateSlider.setBounds (controls.removeFromLeft (190));
-    controls.removeFromLeft (10);
-    slideButton.setBounds (controls.removeFromLeft (80));
-    accentButton.setBounds (controls.removeFromLeft (88));
-    restButton.setBounds (controls.removeFromLeft (76));
-    recordButton.setBounds (controls.removeFromLeft (125));
-    status.setBounds (area.removeFromTop (32));
-}
-
 //==============================================================================
 NSynthAudioProcessorEditor::NSynthAudioProcessorEditor (NSynthAudioProcessor& p)
     : AudioProcessorEditor (p), synth (p)
@@ -944,7 +677,7 @@ NSynthAudioProcessorEditor::NSynthAudioProcessorEditor (NSynthAudioProcessor& p)
     presetName.setFont (juce::Font (juce::FontOptions (14.0f)));
     content.addAndMakeVisible (presetName);
     for (auto* b : { &prevPreset, &nextPreset, &loadPreset, &savePreset, &upperSelect, &lowerSelect, &initLayer, &copyUpToLow, &copyLowToUp,
-                     &loadPatch, &savePatch, &comparePatch, &modMatrixButton, &waveBrowserButton, &sequenceButton })
+                     &loadPatch, &savePatch, &comparePatch, &modMatrixButton, &waveBrowserButton })
         content.addAndMakeVisible (*b);
 
     prevPreset.onClick = [this] { stepPreset (-1); };
@@ -1008,7 +741,6 @@ NSynthAudioProcessorEditor::NSynthAudioProcessorEditor (NSynthAudioProcessor& p)
     };
     modMatrixButton.onClick = [this] { modMatrixPage->setVisible (true); };
     waveBrowserButton.onClick = [this] { waveBrowserPage->setVisible (true); };
-    sequenceButton.onClick = [this] { sequencePage->setVisible (true); };
 
     upperSelect.setClickingTogglesState (false);
     upperSelect.onClick = [this] { selectBottomLayer (Layer::upper); };
@@ -1027,7 +759,7 @@ NSynthAudioProcessorEditor::NSynthAudioProcessorEditor (NSynthAudioProcessor& p)
         { Section::dds1, 2 }, { Section::dds2, 2 }, { Section::mixer, 1 }, { Section::vcf, 3 }, { Section::vca, 2 },
         { Section::env1, 3 }, { Section::env2, 2 }, { Section::lfo1, 2 }, { Section::ddsMod, 3 } };
     const std::pair<Section, int> sharedSections[] = {
-        { Section::perfControl, 7 }, { Section::voiceAssign, 2 }, { Section::arpSeq, 4 }, { Section::fx, 3 } };
+        { Section::perfControl, 5 }, { Section::voiceAssign, 3 }, { Section::delay, 3 }, { Section::reverb, 3 }, { Section::fx, 3 } };
 
     for (auto layer : { Layer::upper, Layer::lower })
     {
@@ -1070,10 +802,6 @@ NSynthAudioProcessorEditor::NSynthAudioProcessorEditor (NSynthAudioProcessor& p)
     waveBrowserPage->onClose = [this] { waveBrowserPage->setVisible (false); };
     content.addAndMakeVisible (*waveBrowserPage);
     waveBrowserPage->setVisible (false);
-    sequencePage = std::make_unique<SequencePage> (synth.getState(), synth.getEngine(), bottomLayer);
-    sequencePage->onClose = [this] { sequencePage->setVisible (false); };
-    content.addAndMakeVisible (*sequencePage);
-    sequencePage->setVisible (false);
 
     for (int pct : { 50, 75, 100, 125, 150, 200 })
         sizeBox.addItem (juce::String (pct) + " %", pct);
@@ -1081,6 +809,7 @@ NSynthAudioProcessorEditor::NSynthAudioProcessorEditor (NSynthAudioProcessor& p)
     content.addAndMakeVisible (sizeBox);
 
     selectBottomLayer (Layer::upper);
+    updateSwitchedControls();
     layoutContent();
 
     // Read before setResizeLimits(): that call resizes the editor and resized() stores the scale.
@@ -1104,13 +833,34 @@ NSynthAudioProcessorEditor::~NSynthAudioProcessorEditor()
 
 std::unique_ptr<SectionPanel> NSynthAudioProcessorEditor::makeSection (Layer layer, Section section, int columns, juce::Colour accent)
 {
+    // Two controls in one cell; the selector parameter (on = value > 0.5) decides which one is shown.
+    struct SharedCell { const char* first; const char* second; const char* selector; bool secondShownWhenOn; };
+    static constexpr SharedCell sharedCells[] = {
+        { pid::delayMs, pid::delayDivision, pid::delaySync, true }, // SYNC on: division, off: milliseconds
+        { pid::velFixed, pid::velCurve, pid::velMode, false },      // Static: fixed velocity, Dynamic: curve
+    };
+
     auto panel = std::make_unique<SectionPanel> (sectionName (section), accent, columns);
+    ParamControl* previous = nullptr;
     for (auto& spec : getLayerParamSpecs())
         if (spec.section == section)
         {
             auto control = std::make_unique<ParamControl> (synth.getState(), layerParamId (layer, spec.suffix), spec, accent);
             configureMidiLearn (*control);
-            panel->add (std::move (control));
+            bool shares = false;
+            for (const auto& cell : sharedCells)
+                if (juce::String (spec.suffix) == cell.second && previous != nullptr
+                    && previous->getParamId() == layerParamId (layer, cell.first))
+                {
+                    shares = true;
+                    auto* condition = synth.getState().getRawParameterValue (layerParamId (layer, cell.selector));
+                    if (cell.secondShownWhenOn)
+                        switchedCells.push_back ({ previous, control.get(), condition });
+                    else
+                        switchedCells.push_back ({ control.get(), previous, condition });
+                }
+            previous = control.get();
+            panel->add (std::move (control), shares);
         }
     return panel;
 }
@@ -1129,8 +879,6 @@ void NSynthAudioProcessorEditor::selectBottomLayer (Layer layer)
     bottomLayer = layer;
     if (modMatrixPage != nullptr)
         modMatrixPage->setLayer (layer);
-    if (sequencePage != nullptr)
-        sequencePage->setLayer (layer);
     for (auto l : { Layer::upper, Layer::lower })
         for (auto& s : layers[(size_t) toInt (l)].sharedSections)
             s->setVisible (l == layer);
@@ -1154,8 +902,6 @@ void NSynthAudioProcessorEditor::layoutContent()
     header.removeFromLeft (6);
     waveBrowserButton.setBounds (header.removeFromLeft (86).withSizeKeepingCentre (86, 24));
     header.removeFromLeft (6);
-    sequenceButton.setBounds (header.removeFromLeft (86).withSizeKeepingCentre (86, 24));
-    header.removeFromLeft (6);
     sizeBox.setBounds (header.removeFromRight (84).withSizeKeepingCentre (84, 24));
     header.removeFromRight (8);
     voiceMeter.setBounds (header.removeFromRight (210));
@@ -1169,7 +915,6 @@ void NSynthAudioProcessorEditor::layoutContent()
     presetName.setBounds (bar.reduced (4, 0));
     modMatrixPage->setBounds (juce::Rectangle<int> (0, 0, kDesignWidth, kDesignHeight));
     waveBrowserPage->setBounds (juce::Rectangle<int> (0, 0, kDesignWidth, kDesignHeight));
-    sequencePage->setBounds (juce::Rectangle<int> (0, 0, kDesignWidth, kDesignHeight));
 
     performancePanel->setBounds (r.removeFromTop (84));
     r.removeFromTop (4);
@@ -1285,8 +1030,19 @@ void NSynthAudioProcessorEditor::refreshDisplay() noexcept
                         juce::dontSendNotification);
 }
 
+void NSynthAudioProcessorEditor::updateSwitchedControls()
+{
+    for (const auto& cell : switchedCells)
+    {
+        const bool on = cell.condition != nullptr && cell.condition->load() > 0.5f;
+        cell.whenOn->setVisible (on);
+        cell.whenOff->setVisible (! on);
+    }
+}
+
 void NSynthAudioProcessorEditor::timerCallback()
 {
+    updateSwitchedControls();
     const auto dropped = synth.getEngine().getDroppedMidiParameterChanges();
     if (dropped > lastMidiParameterDrops)
     {

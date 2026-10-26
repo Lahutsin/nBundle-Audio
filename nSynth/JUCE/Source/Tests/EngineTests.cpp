@@ -69,7 +69,7 @@ public:
 
     void runTest() override
     {
-        beginTest ("parallel voice rendering matches serial output in dual-layer 8x mode");
+        beginTest ("parallel voice rendering matches serial output in dual-layer mode");
         {
             Rig serial (48000.0, 256);
             Rig parallel (48000.0, 256);
@@ -77,7 +77,6 @@ public:
 
             for (auto* rig : { &serial, &parallel })
             {
-                rig->setPerf (pid::quality, (float) toInt (Quality::x8));
                 rig->setPerf (pid::kbdMode, (float) toInt (KeyboardMode::dual));
                 rig->setBoth (pid::binaural, 0.0f);
                 rig->setBoth (pid::dds1Wave, (float) toInt (Dds1Wave::sine));
@@ -137,6 +136,7 @@ public:
             Rig bent, matrixRouted;
             for (auto* rig : { &bent, &matrixRouted })
             {
+                rig->setLayer (Layer::upper, pid::binaural, (float) toInt (BinauralMode::x1)); // one voice per ear: exact pitch
                 rig->setLayer (Layer::upper, pid::dds1Wave, (float) toInt (Dds1Wave::sine));
                 rig->setPerf (pid::ribbon, 1.0f);
             }
@@ -176,54 +176,6 @@ public:
             file.deleteFile();
         }
 
-        beginTest ("sequencer emits sample-clocked notes and HOLD transposes the sequence from C4");
-        {
-            Rig rig;
-            rig.setLayer (Layer::upper, pid::arpOn, 1.0f);
-            rig.setLayer (Layer::upper, pid::arpMode, (float) toInt (ArpMode::seq));
-            rig.setLayer (Layer::upper, pid::hold, 1.0f);
-            rig.setLayer (Layer::upper, pid::binaural, 0.0f);
-            rig.setLayer (Layer::upper, pid::dds1Wave, (float) toInt (Dds1Wave::sine));
-            SequenceStep step;
-            step.notes[0] = 0;
-            step.noteCount = 1;
-            step.rest = false;
-            expect (rig.proc.getEngine().sequenceBank (Layer::upper).setStep (0, 0, step));
-            const auto audio = rig.render (6000, { { 0, on (72) }, { 100, off (72) } });
-            expectWithinAbsoluteError (zeroCrossingFrequency (audio.l, 48000.0), 523.251, 1.0);
-            expect (allFinite (audio.l) && allFinite (audio.r));
-        }
-
-        beginTest ("arpeggiator steps through held notes in Up/Down/Up&Down modes and HOLD latches");
-        {
-            Rig rig;
-            rig.setLayer (Layer::upper, pid::arpOn, 1.0f);
-            rig.setLayer (Layer::upper, pid::arpMode, (float) toInt (ArpMode::up));
-            rig.setLayer (Layer::upper, pid::hold, 1.0f);
-            rig.setLayer (Layer::upper, pid::binaural, 0.0f);
-            rig.setLayer (Layer::upper, pid::dds1Wave, (float) toInt (Dds1Wave::sine));
-            // 120 BPM, 1/16 = 0.25 beats = 0.125 s = 6000 samples per step at 48 kHz
-            const auto audio = rig.render (12000, { { 0, on (60) }, { 0, on (69) }, { 100, off (60) }, { 100, off (69) } });
-            std::vector<float> step1 (audio.l.begin() + 600, audio.l.begin() + 4200);
-            std::vector<float> step2 (audio.l.begin() + 6600, audio.l.begin() + 10200);
-            expectWithinAbsoluteError (zeroCrossingFrequency (step1, 48000.0), 261.626, 1.5);
-            expectWithinAbsoluteError (zeroCrossingFrequency (step2, 48000.0), 440.0, 1.5);
-        }
-
-        beginTest ("incoming MIDI notes reach the armed sequence recorder without blocking the audio thread");
-        {
-            Rig rig;
-            auto& bank = rig.proc.getEngine().sequenceBank (Layer::upper);
-            bank.setRecording (true, 6, 21);
-            rig.render (256, { { 0, on (64) }, { 128, off (64) } });
-            SequenceBank::RecordedNote recorded;
-            expect (bank.popRecordedNote (recorded));
-            expectEquals (recorded.slot, 6);
-            expectEquals (recorded.step, 21);
-            expectEquals (recorded.interval, 4);
-            bank.setRecording (false, 0, 0);
-        }
-
         beginTest ("no notes -> digital silence");
         {
             Rig rig;
@@ -232,11 +184,11 @@ public:
             expectEquals (peak (out.r), 0.0f);
         }
 
-        beginTest ("end-to-end pitch: DDS1 sine, A4 -> 440 Hz at every oversampling factor; latency reported");
-        for (auto q : { Quality::x2, Quality::x4, Quality::x8 })
+        beginTest ("end-to-end pitch: DDS1 sine, A4 -> 440 Hz with fixed 2x oversampling; latency reported");
         {
             Rig rig;
-            rig.setPerf (pid::quality, (float) toInt (q));
+            expectEquals (SynthLayer::getOversamplingFactor(), 2);
+            rig.setLayer (Layer::upper, pid::binaural, (float) toInt (BinauralMode::x1));
             rig.setLayer (Layer::upper, pid::dds1Wave, (float) toInt (Dds1Wave::sine));
             auto out = rig.render (48000, { { 0, on (69) } });
             expectWithinAbsoluteError (zeroCrossingFrequency (out.l, 48000.0, 4800), 440.0, 0.1);
@@ -247,12 +199,14 @@ public:
         beginTest ("RANGE 4' doubles, transpose/perf detune shift, LOWER detune only affects the lower layer");
         {
             Rig rig;
+            rig.setBoth (pid::binaural, (float) toInt (BinauralMode::x1));
             rig.setBoth (pid::dds1Wave, (float) toInt (Dds1Wave::sine));
             rig.setLayer (Layer::upper, pid::dds1Range, (float) toInt (Dds1Range::ft4));
             auto a = rig.render (48000, { { 0, on (57) } }); // A3 at 4' = 440
             expectWithinAbsoluteError (zeroCrossingFrequency (a.l, 48000.0, 4800), 440.0, 0.1);
 
             Rig rig2;
+            rig2.setBoth (pid::binaural, (float) toInt (BinauralMode::x1));
             rig2.setBoth (pid::dds1Wave, (float) toInt (Dds1Wave::sine));
             rig2.setPerf (pid::kbdMode, (float) toInt (KeyboardMode::split));
             rig2.setPerf (pid::lowerDetune, 7.0f);
@@ -270,36 +224,79 @@ public:
             expectGreaterThan (rms (out.l), 0.01);
         }
 
-        beginTest ("SINGLE + binaural: 10 stereo super voices = 20 hardware voices");
+        beginTest ("SINGLE + binaural x2: 16 notes x 4 voices = 64 hardware voices; x1: 32 stereo notes");
         {
             Rig rig;
-            rig.render (512, chord ({ 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50 }));
-            expectEquals (rig.voices (Layer::upper), 20);
+            expectEquals (SynthEngine::kNumVoices, 64);
+            std::vector<std::pair<int, juce::MidiMessage>> e;
+            for (int n = 40; n < 57; ++n) e.push_back ({ 0, on (n) });
+            rig.render (512, e);
+            expectEquals (rig.voices (Layer::upper), 64);
             expectEquals (rig.voices (Layer::lower), 0);
-            expectEquals (rig.layer (Layer::upper).getUnitSize(), 2);
+            expectEquals (rig.layer (Layer::upper).getUnitSize(), 4);
+
+            Rig x1;
+            x1.setLayer (Layer::upper, pid::binaural, (float) toInt (BinauralMode::x1));
+            std::vector<std::pair<int, juce::MidiMessage>> e1;
+            for (int n = 40; n < 73; ++n) e1.push_back ({ 0, on (n) });
+            x1.render (512, e1);
+            expectEquals (x1.voices (Layer::upper), 64);
+            expectEquals (x1.layer (Layer::upper).getUnitSize(), 2);
         }
 
-        beginTest ("SINGLE without binaural: 20 mono voices");
+        beginTest ("binaural x2: detuned pair per ear, same loudness as x1, DETUNE 0 collapses the pair");
+        {
+            auto render = [&] (BinauralMode mode, float detune)
+            {
+                Rig rig;
+                rig.setLayer (Layer::upper, pid::binaural, (float) toInt (mode));
+                rig.setLayer (Layer::upper, pid::binauralDetune, detune);
+                rig.setLayer (Layer::upper, pid::dds1Wave, (float) toInt (Dds1Wave::sine));
+                return rig.render (48000, chord ({ 69 }));
+            };
+            const auto x1 = render (BinauralMode::x1, 7.0f);
+            const auto x2 = render (BinauralMode::x2, 7.0f);
+            const auto x2Flat = render (BinauralMode::x2, 0.0f);
+            expect (allFinite (x2.l) && allFinite (x2.r));
+            // The pair beats at 2 x 7 cents (~3.6 Hz at A4): the envelope of x2 moves, x1 does not.
+            auto envelopeSpread = [] (const std::vector<float>& x)
+            {
+                float lo = 1.0e9f, hi = 0.0f;
+                for (size_t start = 4800; start + 480 <= x.size(); start += 480)
+                {
+                    const float p = peak (std::vector<float> (x.begin() + (long) start, x.begin() + (long) start + 480));
+                    lo = juce::jmin (lo, p);
+                    hi = juce::jmax (hi, p);
+                }
+                return hi / juce::jmax (lo, 1.0e-9f);
+            };
+            expectLessThan (envelopeSpread (x1.l), 1.05f);
+            expectGreaterThan (envelopeSpread (x2.l), 1.5f);
+            expectWithinAbsoluteError (toDb (rms (x2.l, 4800)), toDb (rms (x1.l, 4800)), 2.0);
+            expectLessThan (envelopeSpread (x2Flat.l), 1.05f);
+        }
+
+        beginTest ("SINGLE without binaural: 64 mono voices");
         {
             Rig rig;
             rig.setLayer (Layer::upper, pid::binaural, 0.0f);
             std::vector<std::pair<int, juce::MidiMessage>> e;
-            for (int n = 40; n < 62; ++n) e.push_back ({ 0, on (n) });
+            for (int n = 30; n < 96; ++n) e.push_back ({ 0, on (n) });
             rig.render (512, e);
-            expectEquals (rig.voices (Layer::upper), 20);
+            expectEquals (rig.voices (Layer::upper), 64);
             expectEquals (rig.layer (Layer::upper).getUnitSize(), 1);
         }
 
-        beginTest ("DUAL: both layers sound, 10 voices each (5 binaural notes)");
+        beginTest ("DUAL: both layers sound, 32 voices each (8 binaural x2 notes)");
         {
             Rig rig;
             rig.setPerf (pid::kbdMode, (float) toInt (KeyboardMode::dual));
             rig.render (512, chord ({ 60 }));
-            expectEquals (rig.voices (Layer::upper), 2);
-            expectEquals (rig.voices (Layer::lower), 2);
-            rig.render (512, chord ({ 61, 62, 63, 64, 65, 66 }));
-            expectEquals (rig.voices (Layer::upper), 10);
-            expectEquals (rig.voices (Layer::lower), 10);
+            expectEquals (rig.voices (Layer::upper), 4);
+            expectEquals (rig.voices (Layer::lower), 4);
+            rig.render (512, chord ({ 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71 }));
+            expectEquals (rig.voices (Layer::upper), 32);
+            expectEquals (rig.voices (Layer::lower), 32);
         }
 
         beginTest ("SPLIT: below the split point -> LOWER, from the split point -> UPPER");
@@ -308,10 +305,10 @@ public:
             rig.setPerf (pid::kbdMode, (float) toInt (KeyboardMode::split));
             rig.setPerf (pid::splitPoint, 60.0f);
             rig.render (256, chord ({ 59 }));
-            expectEquals (rig.voices (Layer::lower), 2);
+            expectEquals (rig.voices (Layer::lower), 4);
             expectEquals (rig.voices (Layer::upper), 0);
             rig.render (256, chord ({ 60 }));
-            expectEquals (rig.voices (Layer::upper), 2);
+            expectEquals (rig.voices (Layer::upper), 4);
         }
 
         beginTest ("POLY 1 lets releases overlap, POLY 2 curtails them");
@@ -323,7 +320,7 @@ public:
                 rig.setLayer (Layer::upper, pid::env2Release, 2.0f);
                 rig.render (4800, { { 0, on (60) }, { 2400, off (60) }, { 2400 + 256, on (64) } });
                 rig.render (4800); // 100 ms later
-                expectEquals (rig.voices (Layer::upper), mode == VoiceMode::poly1 ? 4 : 2);
+                expectEquals (rig.voices (Layer::upper), mode == VoiceMode::poly1 ? 8 : 4);
             }
         }
 
@@ -343,7 +340,7 @@ public:
                 const auto stage = v->getAmpEnvelope().getStage();
                 if (mode == VoiceMode::solo) expect (stage == Envelope::Stage::attack);
                 else                         expect (stage != Envelope::Stage::attack);
-                expectEquals (rig.voices (Layer::upper), 2); // still one binaural voice
+                expectEquals (rig.voices (Layer::upper), 4); // still one binaural x2 voice
             }
         }
 
@@ -363,17 +360,17 @@ public:
             rig.setLayer (Layer::upper, pid::unison, 1.0f);
             rig.setLayer (Layer::upper, pid::unisonSize, (float) toInt (UnisonSize::octave));
             rig.render (512, chord ({ 48 }));
-            expectEquals (rig.voices (Layer::upper), 20);
+            expectEquals (rig.voices (Layer::upper), 64);
             int octaveUp = 0;
             for (auto* v : rig.layer (Layer::upper).getVoices())
                 octaveUp += std::abs (v->getCurrentPitch() - 60.0f) < 0.01f ? 1 : 0;
-            expectEquals (octaveUp, 10);
+            expectEquals (octaveUp, 32);
 
             rig.setLayer (Layer::upper, pid::unisonSize, (float) toInt (UnisonSize::half));
             rig.render (512, { { 0, off (48) } });
             rig.render (48000);
             rig.render (512, chord ({ 50 }));
-            expectEquals (rig.voices (Layer::upper), 10);
+            expectEquals (rig.voices (Layer::upper), 32);
         }
 
         beginTest ("UNISON in POLY divides the stacked voices by the number of notes");
@@ -382,13 +379,13 @@ public:
             rig.setLayer (Layer::upper, pid::unison, 1.0f);
             rig.setLayer (Layer::upper, pid::env2Release, 0.001f);
             rig.render (256, chord ({ 60 }));
-            expectEquals (rig.voices (Layer::upper), 20);
+            expectEquals (rig.voices (Layer::upper), 64);
             rig.render (4800, chord ({ 64 }));
             int onFirst = 0, onSecond = 0;
             for (auto* v : rig.layer (Layer::upper).getVoices())
                 if (v->isGateOn()) (v->getNote() == 60 ? onFirst : onSecond)++;
-            expectEquals (onFirst, 10);
-            expectEquals (onSecond, 10);
+            expectEquals (onFirst, 32);
+            expectEquals (onSecond, 32);
         }
 
         beginTest ("binaural: left and right differ (super detune mirrored); mono path with SPREAD 0 is centred");
@@ -439,7 +436,7 @@ public:
             Rig rig;
             rig.render (512, { { 0, on (60) }, { 10, juce::MidiMessage::controllerEvent (1, 64, 127) }, { 20, off (60) } });
             rig.render (4800);
-            expectEquals (rig.voices (Layer::upper), 2);
+            expectEquals (rig.voices (Layer::upper), 4);
             expect (rig.layer (Layer::upper).getVoices().front()->isGateOn());
             rig.render (512, { { 0, juce::MidiMessage::controllerEvent (1, 64, 0) } });
             expect (! rig.layer (Layer::upper).getVoices().front()->isGateOn());
@@ -473,6 +470,83 @@ public:
             for (auto* voice : lowerVoices) lowerGate |= voice->isGateOn();
             expect (upperGate);
             expect (! lowerGate);
+        }
+
+        beginTest ("velocity: DYNAMIC follows the played velocity and VEL CURVE, STATIC ignores it");
+        {
+            auto level = [&] (VelocityMode mode, float velocity, float curve, int fixedVelocity)
+            {
+                Rig rig;
+                rig.setLayer (Layer::upper, pid::binaural, 0.0f);
+                rig.setLayer (Layer::upper, pid::dds1Wave, (float) toInt (Dds1Wave::sine));
+                rig.setLayer (Layer::upper, pid::velSens, 1.0f);
+                rig.setLayer (Layer::upper, pid::velMode, (float) toInt (mode));
+                rig.setLayer (Layer::upper, pid::velCurve, curve);
+                rig.setLayer (Layer::upper, pid::velFixed, (float) fixedVelocity);
+                return rms (rig.render (9600, { { 0, on (69, velocity) } }).l, 2400);
+            };
+            const double loud = level (VelocityMode::dynamic, 1.0f, 0.0f, 100);
+            const double soft = level (VelocityMode::dynamic, 0.3f, 0.0f, 100);
+            expectLessThan (soft, 0.5 * loud);
+            expectLessThan (level (VelocityMode::dynamic, 0.3f, 1.0f, 100), 0.6 * soft);    // hard curve
+            expectGreaterThan (level (VelocityMode::dynamic, 0.3f, -1.0f, 100), 1.5 * soft); // soft curve
+            expectWithinAbsoluteError (level (VelocityMode::fixed, 0.3f, 0.0f, 127), loud, 1.0e-6 + 1.0e-3 * loud);
+            expectWithinAbsoluteError (level (VelocityMode::fixed, 1.0f, 0.0f, 40),
+                                       level (VelocityMode::fixed, 0.1f, 0.0f, 40), 1.0e-9);
+
+            Rig rig;
+            rig.setLayer (Layer::upper, pid::velMode, (float) toInt (VelocityMode::fixed));
+            rig.setLayer (Layer::upper, pid::velFixed, 64.0f);
+            rig.render (256);
+            expectWithinAbsoluteError (rig.layer (Layer::upper).shapeVelocity (0.9f), 64.0f / 127.0f, 1.0e-6f);
+        }
+
+        beginTest ("delay SYNC: a 1/8 echo at 120 BPM arrives 250 ms later; MS mode uses the time in milliseconds");
+        {
+            auto firstSoundAfter = [&] (bool sync)
+            {
+                Rig rig;
+                rig.setLayer (Layer::upper, pid::dds1Wave, (float) toInt (Dds1Wave::sine));
+                rig.setLayer (Layer::upper, pid::env2Release, 0.001f);
+                rig.setLayer (Layer::upper, pid::delayMix, 1.0f);      // wet only
+                rig.setLayer (Layer::upper, pid::delayFeedback, 0.0f);
+                rig.setLayer (Layer::upper, pid::delaySync, sync ? 1.0f : 0.0f);
+                rig.setLayer (Layer::upper, pid::delayDivision, (float) toInt (DelayDivision::d1_8));
+                rig.setLayer (Layer::upper, pid::delayMs, 100.0f);
+                const auto out = rig.render (24000, { { 0, on (69) }, { 480, off (69) } });
+                for (size_t i = 0; i < out.l.size(); ++i)
+                    if (std::abs (out.l[i]) > 1.0e-3f)
+                        return (int) i;
+                return -1;
+            };
+            expectWithinAbsoluteError (firstSoundAfter (true), 12000, 40);
+            expectWithinAbsoluteError (firstSoundAfter (false), 4800, 40);
+        }
+
+        beginTest ("reverb and chorus are off by default and colour the sound once enabled");
+        {
+            Rig dry, wet;
+            wet.setLayer (Layer::upper, pid::reverbMix, 0.4f);
+            wet.setLayer (Layer::upper, pid::chorus, (float) toInt (ChorusMode::oneTwo));
+            const auto a = dry.render (48000, { { 0, on (60) }, { 4800, off (60) } });
+            const auto b = wet.render (48000, { { 0, on (60) }, { 4800, off (60) } });
+            const std::vector<float> dryTail (a.l.begin() + 24000, a.l.end()), wetTail (b.l.begin() + 24000, b.l.end());
+            expectLessThan (rms (dryTail), 1.0e-6);
+            expectGreaterThan (rms (wetTail), 1.0e-4);
+            expect (allFinite (b.l) && allFinite (b.r));
+        }
+
+        beginTest ("open filter is bright: a saw's 25th harmonic (11 kHz) is not rolled off");
+        {
+            Rig rig;
+            rig.setLayer (Layer::upper, pid::binaural, 0.0f);
+            rig.setLayer (Layer::upper, pid::dds1Wave, (float) toInt (Dds1Wave::saw));
+            const auto out = rig.render (24000, { { 0, on (69) } });
+            const double fundamental = toneAmplitude (out.l, 440.0, 48000.0, 4800);
+            const double h25 = toneAmplitude (out.l, 25.0 * 440.0, 48000.0, 4800);
+            const double relativeDb = toDb (h25 / fundamental) - toDb (1.0 / 25.0); // 0 dB = ideal saw
+            expectGreaterThan (relativeDb, -1.0);
+            expectLessThan (relativeDb, 3.5);
         }
 
         beginTest ("all supported sample rates produce finite audio");

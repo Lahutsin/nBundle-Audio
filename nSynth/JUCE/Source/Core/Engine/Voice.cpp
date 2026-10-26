@@ -30,7 +30,7 @@ float directParameterValue (const LayerSnapshot& p, DirectModTarget target) noex
         case DirectModTarget::ddsModLfo1Amount: return p.modLfo1;
         case DirectModTarget::pwDetune: return p.pwDetune;
         case DirectModTarget::portamento: return p.portamento;
-        case DirectModTarget::delaySend: return p.delaySend;
+        case DirectModTarget::delayMix: return p.delayMix;
         case DirectModTarget::delayFeedback: return p.delayFeedback;
         case DirectModTarget::count: break;
     }
@@ -63,7 +63,7 @@ void setDirectParameterValue (LayerSnapshot& p, DirectModTarget target, float va
         case DirectModTarget::ddsModLfo1Amount: p.modLfo1 = value; break;
         case DirectModTarget::pwDetune: p.pwDetune = value; break;
         case DirectModTarget::portamento: p.portamento = value; break;
-        case DirectModTarget::delaySend: p.delaySend = value; break;
+        case DirectModTarget::delayMix: p.delayMix = value; break;
         case DirectModTarget::delayFeedback: p.delayFeedback = value; break;
         case DirectModTarget::count: break;
     }
@@ -74,7 +74,7 @@ const std::array<const char*, ModMatrixData::directTargetCount> directParameterI
     pid::vcaEnv, pid::vcaLfo1, pid::vcaDds2, pid::env1Attack, pid::env1Sustain,
     pid::env1Release, pid::env2Attack, pid::env2Decay, pid::env2Sustain, pid::env2Release,
     pid::lfo1Delay, pid::lfo1LrPhase, pid::lfo2Rate, pid::lfo2Delay, pid::modLfo1,
-    pid::pwDetune, pid::portamento, pid::delaySend, pid::delayFeedback
+    pid::pwDetune, pid::portamento, pid::delayMix, pid::delayFeedback
 };
 }
 
@@ -88,6 +88,22 @@ float Voice::rangeOffset (Dds2Range r) noexcept
 {
     static constexpr float offsets[] = { 0.0f, -24.0f, -12.0f, 0.0f, 12.0f, 24.0f };   // LFO, 32'..2'
     return offsets[toInt (r)];
+}
+
+float Voice::openLadderCutoff (float hz) noexcept
+{
+    // A 4-pole ladder at 25 kHz still takes ~2.5 dB off at 10 kHz and ~5 dB at 15 kHz, which
+    // made the "fully open" filter sound dull. Above kOpenStretchHz the cutoff is stretched
+    // exponentially so the top of the LPF range reaches 0.45 x the internal rate and the open
+    // filter is close to flat across the audible band; everything below is unchanged.
+    if (hz <= kOpenStretchHz || openExponent <= 1.0f)
+        return hz;
+    if (hz != stretchInput)
+    {
+        stretchInput = hz;
+        stretchOutput = juce::jmin (openTopHz, kOpenStretchHz * fastExp2 (openExponent * std::log2 (hz / kOpenStretchHz)));
+    }
+    return stretchOutput;
 }
 
 float Voice::fastExp2 (float x) noexcept
@@ -125,6 +141,9 @@ void Voice::setSampleRate (double sr)
     lfo2.setSampleRate (sr);
     lfo1Ramp.setSampleRate (sr);
     lfo2Ramp.setSampleRate (sr);
+    openTopHz = (float) (0.45 * sr);
+    openExponent = openTopHz > kLpfMaxHz ? std::log (openTopHz / kOpenStretchHz) / std::log (kLpfMaxHz / kOpenStretchHz) : 1.0f;
+    stretchInput = -1.0f;
 }
 
 void Voice::applyEnvelopeSettings (const LayerSnapshot& p) noexcept
@@ -180,6 +199,8 @@ void Voice::start (const StartInfo& info, const LayerSnapshot& p)
     midiBendSensitivity = 2.0f;
     isMpeMember = false;
     pitchOffset = info.pitchOffset;
+    twinSign = info.twinSign;
+    voiceGain = info.gain;
     side = info.side;
     age = info.age;
     lastModSources.fill (0.0f);
@@ -296,7 +317,7 @@ float Voice::lfo1RateHz (const LayerSnapshot& p, const VoiceContext& ctx) const 
         case Lfo1Wave::square:  break;
     }
 
-    if (p.clockSync)
+    if (p.lfo1Sync)
     {
         const auto& beats = rates::lfo1SyncBeats();
         const double b = beats[(size_t) rates::divisionIndex (p.lfo1Rate, (int) beats.size())];
@@ -335,7 +356,7 @@ void Voice::render (float* outL, float* outR, int startSample, int numSamples, c
     {
         case Lfo1Wave::triangle:   lfo1Shape = LfoShape::triangle; break;
         case Lfo1Wave::revSaw:     lfo1Shape = LfoShape::revSaw; break;
-        case Lfo1Wave::sampleHold: lfo1Shape = p.lfo1Rate >= 0.99f && ! p.clockSync ? LfoShape::noise : LfoShape::sampleHold; break;
+        case Lfo1Wave::sampleHold: lfo1Shape = p.lfo1Rate >= 0.99f && ! p.lfo1Sync ? LfoShape::noise : LfoShape::sampleHold; break;
         case Lfo1Wave::square:     lfo1Shape = LfoShape::square; break;
         case Lfo1Wave::hf:
         case Lfo1Wave::hfTrack:    lfo1Shape = LfoShape::sine; break;
@@ -365,7 +386,7 @@ void Voice::render (float* outL, float* outR, int startSample, int numSamples, c
     const float perfPitch = bendTotal * p.bendDds * (midiBendSensitivity / 2.0f);
 
     const float keyTrack = triStateAmount (p.vcfKeytrack);
-    const float dyn = triStateAmount (p.vcaDynamics);
+    const float dyn = juce::jlimit (0.0f, 1.0f, p.velSens);
     const float velGain = 1.0f - dyn + dyn * velocity;
     const float velOct = dyn * (velocity - 1.0f) * 3.0f;
     const float range1 = rangeOffset (p.dds1Range);
@@ -511,7 +532,8 @@ void Voice::render (float* outL, float* outR, int startSample, int numSamples, c
         const float lfo1PitchSt = effective.modLfo1 * effective.modLfo1 * 12.0f;
         const float oscMod = l1Mod * lfo1PitchSt + e1 * env1PitchSt;
         const float perfMod = perfPitch + l2 * lfo2PitchSt;
-        const double base = currentPitch + (double) ctx.layerPitchOffset + (double) ribbon + (double) channelTuning;
+        const double base = currentPitch + (double) ctx.layerPitchOffset + (double) ribbon + (double) channelTuning
+                          + (double) (twinSign * p.binauralDetune * 0.01f);
 
         double pitch1 = base + range1 + drift1 + (toDds1 ? oscMod : 0.0f) + (perfToDds1 ? perfMod : 0.0f);
         double pitch2 = base + range2 + sTune.next (effective.dds2Tune, smooth) + drift2 + (toDds2 ? oscMod : 0.0f) + (perfToDds2 ? perfMod : 0.0f);
@@ -583,7 +605,8 @@ void Voice::render (float* outL, float* outR, int startSample, int numSamples, c
                         : p.res;
         const float lpfBase = sLpf.next (effective.lpfHz, smooth);
         const float hpfBase = sHpf.next (hpfHz, smooth);
-        filter.setParameters (hpfBase * fastExp2 (driftCut), lpfBase * fastExp2 (octaves), sRes.next (res, smooth), p.drive);
+        filter.setParameters (hpfBase * fastExp2 (driftCut), openLadderCutoff (lpfBase * fastExp2 (octaves)),
+                              sRes.next (res, smooth), p.drive);
         const float filtered = filter.process (osc);
 
         // ---- VCA -------------------------------------------------------------
@@ -593,7 +616,7 @@ void Voice::render (float* outL, float* outR, int startSample, int numSamples, c
         gain *= juce::jmax (0.0f, 1.0f + effective.vcaDds2 * d2);
         gain *= juce::jmax (0.0f, 1.0f + p.lfo2Vca * l2);
 
-        const float out = filtered * gain * kOutputGain;
+        const float out = filtered * gain * kOutputGain * voiceGain;
         outL[i] += out * panL;
         outR[i] += out * panR;
 

@@ -11,7 +11,7 @@ class NSynthAudioProcessor : public juce::AudioProcessor,
 {
 public:
     static constexpr int kDesignWidth = 1360;
-    static constexpr int kDesignHeight = 760;
+    static constexpr int kDesignHeight = 820;
 
     NSynthAudioProcessor();
     ~NSynthAudioProcessor() override;
@@ -73,6 +73,7 @@ private:
     std::vector<float> captureLayerValues (nsynth::Layer layer) const;
     void applyLayerValues (nsynth::Layer layer, const std::vector<float>& values);
     juce::ValueTree getWaveBankState (const juce::ValueTree& root) const;
+    static void removeLegacyChildren (juce::ValueTree& root);
 
     juce::AudioProcessorValueTreeState apvts;
     nsynth::SynthEngine engine;
@@ -85,7 +86,6 @@ private:
     std::array<std::vector<float>, 2> patchBaseline, patchCompareSnapshot;
     std::array<nsynth::ModMatrixData, 2> patchMatrixBaseline, patchMatrixCompareSnapshot;
     std::array<juce::ValueTree, 2> patchWaveBaseline, patchWaveCompareSnapshot;
-    std::array<nsynth::SequenceBankData, 2> patchSequenceBaseline, patchSequenceCompareSnapshot;
     std::array<juce::String, 2> patchNames { "Init", "Init" };
     std::array<bool, 2> patchCompareActive {};
 

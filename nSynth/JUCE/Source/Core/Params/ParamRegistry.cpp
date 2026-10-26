@@ -96,7 +96,6 @@ std::vector<ParamSpec> buildLayerSpecs()
         F (pid::vcaLfo1, "VCA LFO1 Amount", S::vca, 0.0f, 1.0f, 0.0f, Lin, 0, "", 92, "p.45"),
         F (pid::vcaDds2, "VCA DDS2 Amount", S::vca, 0.0f, 1.0f, 0.0f, Lin, 0, "", 109, "p.45"),
         C (pid::vcaEnvMode, "VCA Env Mode", S::vca, { "ENV 2", "Fixed 1 (Gate)", "Fixed 2 (Gate+Rel)" }, 0, 49, "p.45"),
-        C (pid::vcaDynamics, "VCA Dynamics", S::vca, tri3, 0, 48, "p.45", "Velocity -> level and LPF brightness."),
 
         // ---------------------------------------------------------------- ENV 1
         F (pid::env1AttackHold, "ENV1 Attack Hold", S::env1, 0.0f, 10.0f, 0.0f, Skw, 1.0f, "s", 52, "p.47"),
@@ -122,6 +121,7 @@ std::vector<ParamSpec> buildLayerSpecs()
         F (pid::lfo1Delay, "LFO1 Delay", S::lfo1, 0.0f, 5.0f, 0.0f, Skw, 0.5f, "s", 18, "p.56", "Linear fade-in time after note-on."),
         F (pid::lfo1LrPhase, "LFO1 LR Phase / Spread", S::lfo1, 0.0f, 1.0f, 0.0f, Lin, 0, "", 19, "p.56-58", "0..1 = 0..2pi; non-binaural: pan spread."),
         C (pid::lfo1Mode, "LFO1 Mode", S::lfo1, { "Free / Norm", "Once / DDS 1", "Reset / DDS 2" }, 0, 20, "p.59"),
+        B (pid::lfo1Sync, "LFO1 Clock Sync", S::lfo1, false, 81, "p.92", "LF rates snap to 16 tempo divisions."),
 
         // ---------------------------------------------------------------- Performance control (per layer)
         C (pid::lfo2Wave, "LFO2 Waveform", S::perfControl, { "Sine", "Rev Sawtooth", "Sample & Hold", "Square", "Sawtooth", "Noise" }, 0, 105, "p.70"),
@@ -138,28 +138,59 @@ std::vector<ParamSpec> buildLayerSpecs()
         F (pid::portamento, "Portamento", S::perfControl, 0.0f, 1.0f, 0.0f, Lin, 0, "", 5, "p.74", "0 = off; 1 = 10 s per octave (cubic taper)."),
         I (pid::octave, "Octave", S::perfControl, -2, 2, 0, "oct", 67, "p.75"),
 
-        // ---------------------------------------------------------------- Voice assign
+        // ---------------------------------------------------------------- Voice assign / velocity
         C (pid::voiceMode, "Voice Assign Mode", S::voiceAssign, { "Solo", "Legato", "Poly 1", "Poly 2" }, 2, 78, "p.90"),
         B (pid::unison, "Unison", S::voiceAssign, false, -1, "p.90"),
         C (pid::unisonSize, "Unison Size", S::voiceAssign, { "Half", "All", "Octave", "Fifth + Octave" }, 1, 79, "p.91"),
-        B (pid::binaural, "Binaural", S::voiceAssign, true, 80, "p.91"),
+        C (pid::binaural, "Binaural", S::voiceAssign, { "Off", "x1", "x2" }, 2, 80, "p.91",
+           "x1: one voice per ear; x2: a detuned pair per ear (4 voices per note) for a wider, denser sound."),
+        F (pid::binauralDetune, "Binaural Detune", S::voiceAssign, 0.0f, 25.0f, 7.0f, Lin, 0, "ct", -1, "-",
+           "x2: mirrored detune between the two voices of each ear."),
+        B (pid::hold, "Hold", S::voiceAssign, false, 87, "p.81"),
+        C (pid::velMode, "Velocity Mode", S::voiceAssign, { "Dynamic", "Static" }, 0, -1, "-",
+           "Dynamic: played velocity through VEL CURVE. Static: every note uses STATIC VEL."),
+        I (pid::velFixed, "Static Velocity", S::voiceAssign, 1, 127, 100, "", -1, "-", "Velocity of every note in Static mode."),
+        F (pid::velCurve, "Velocity Curve", S::voiceAssign, -1.0f, 1.0f, 0.0f, Lin, 0, "", -1, "-",
+           "Dynamic mode: < 0 soft (light touch is louder), 0 linear, > 0 hard."),
+        F (pid::velSens, "Velocity Sensitivity", S::voiceAssign, 0.0f, 1.0f, 0.5f, Lin, 0, "", 48, "p.45",
+           "Velocity -> VCA level and LPF brightness (0 = velocity ignored)."),
 
-        // ---------------------------------------------------------------- Arp / Seq
-        B (pid::arpOn, "Arp/Seq On", S::arpSeq, false, 86, "p.94"),
-        C (pid::arpMode, "Arp/Seq Mode", S::arpSeq, { "Up", "Down", "Up & Down", "Random", "Sequencer" }, 0, 85, "p.94"),
-        I (pid::arpRange, "Arp Range", S::arpSeq, 1, 4, 1, "oct", 82, "p.94"),
-        C (pid::clockDiv, "Clock Divider", S::arpSeq, { "1/1", "1/2", "1/4", "1/8", "1/16", "1/32", "1/4 T", "1/8 T" }, 4, 107, "p.92"),
-        B (pid::clockSync, "Clock Sync (LFO1/Delay)", S::arpSeq, false, 81, "p.92"),
-        I (pid::swing, "Swing", S::arpSeq, 0, 4, 0, "", 83, "p.93"),
-        I (pid::seqSlot, "Sequence Slot", S::arpSeq, 1, 16, 1, "", 14, "p.98"),
-        B (pid::hold, "Hold", S::arpSeq, false, 87, "p.81"),
+        // ---------------------------------------------------------------- Chorus
+        C (pid::chorus, "Chorus", S::fx, { "Off", "I", "II", "I + II" }, 0, 93, "p.64",
+           "Modulated voices per side: I = 1, II = 2, I + II = 3."),
+        F (pid::chorusRate, "Chorus Rate", S::fx, 0.05f, 10.0f, 0.5f, Exp, 0, "Hz", 102, "-"),
+        F (pid::chorusDepth, "Chorus Depth", S::fx, 0.0f, 1.0f, 0.5f, Lin, 0, "", 103, "-", "Modulation depth relative to DELAY."),
+        F (pid::chorusDelay, "Chorus Delay", S::fx, 1.0f, 20.0f, 3.5f, Exp, 0, "ms", -1, "-", "Centre delay of the modulated voices."),
+        F (pid::chorusFeedback, "Chorus Feedback", S::fx, 0.0f, 0.9f, 0.0f, Lin, 0, "", -1, "-"),
+        F (pid::chorusWidth, "Chorus Width", S::fx, 0.0f, 1.0f, 1.0f, Lin, 0, "", -1, "-", "0 = mono, 1 = opposite LFO phase left/right."),
+        F (pid::chorusMix, "Chorus Mix", S::fx, 0.0f, 1.0f, 0.5f, Lin, 0, "", 104, "-"),
 
-        // ---------------------------------------------------------------- FX
-        C (pid::chorus, "Chorus", S::fx, { "Off", "I", "II", "I + II" }, 0, 93, "p.64"),
-        F (pid::delayTime, "Delay Time", S::fx, 0.0f, 1.0f, 0.5f, Lin, 0, "", 12, "p.65", "1 ms-1 s exponential, or 16 divisions with SYNC."),
-        F (pid::delayFeedback, "Delay Feedback", S::fx, 0.0f, 1.0f, 0.3f, Lin, 0, "", 13, "p.66", "1.0 = infinite repeats, no degradation."),
-        F (pid::delaySend, "Delay Send", S::fx, 0.0f, 1.0f, 0.0f, Lin, 0, "", 91, "p.67"),
-        B (pid::delayFreeze, "Delay Freeze", S::fx, false, 69, "p.67"),
+        // ---------------------------------------------------------------- Delay
+        B (pid::delaySync, "Delay Sync", S::delay, true, 82, "p.65", "On: TIME follows the tempo division; off: milliseconds."),
+        F (pid::delayMs, "Delay Time", S::delay, 1.0f, 2000.0f, 350.0f, Exp, 0, "ms", 12, "p.65"),
+        C (pid::delayDivision, "Delay Division", S::delay,
+           { "1/64", "1/32 T", "1/32", "1/16 T", "1/32 D", "1/16", "1/8 T", "1/16 D", "1/8",
+             "1/4 T", "1/8 D", "1/4", "1/2 T", "1/4 D", "1/2", "1/2 D", "1/1" }, 11, 86, "p.65"),
+        F (pid::delayFeedback, "Delay Feedback", S::delay, 0.0f, 1.0f, 0.35f, Lin, 0, "", 13, "p.66", "1.0 = infinite repeats, no degradation."),
+        F (pid::delayMix, "Delay Mix", S::delay, 0.0f, 1.0f, 0.0f, Lin, 0, "", 85, "p.67",
+           "0-50 %: echoes fade in under the full dry signal; 50-100 %: the dry signal fades out."),
+        B (pid::delayPingPong, "Delay Ping-Pong", S::delay, false, 83, "-", "Echoes alternate between left and right."),
+        B (pid::delayFreeze, "Delay Freeze", S::delay, false, 69, "p.67"),
+        F (pid::delayLowCut, "Delay Low Cut", S::delay, 20.0f, 2000.0f, 120.0f, Exp, 0, "Hz", -1, "-", "High-pass in the echo path."),
+        F (pid::delayHighCut, "Delay High Cut", S::delay, 1000.0f, 20000.0f, 9000.0f, Exp, 0, "Hz", -1, "-", "Low-pass in the echo path."),
+
+        // ---------------------------------------------------------------- Reverb
+        F (pid::reverbMix, "Reverb Mix", S::reverb, 0.0f, 1.0f, 0.0f, Lin, 0, "", 91, "-",
+           "0-50 %: the tail fades in under the full dry signal; 50-100 %: the dry signal fades out."),
+        F (pid::reverbSize, "Reverb Size", S::reverb, 0.0f, 1.0f, 0.6f, Lin, 0, "", 89, "-"),
+        F (pid::reverbDecay, "Reverb Decay", S::reverb, 0.2f, 20.0f, 2.5f, Exp, 0, "s", 90, "-", "RT60 of the low/mid band."),
+        F (pid::reverbPreDelay, "Reverb Pre-Delay", S::reverb, 0.0f, 250.0f, 15.0f, Skw, 50.0f, "ms", -1, "-"),
+        F (pid::reverbDamping, "Reverb High Cut", S::reverb, 1000.0f, 20000.0f, 9000.0f, Exp, 0, "Hz", -1, "-",
+           "High frequencies above this decay faster."),
+        F (pid::reverbLowCut, "Reverb Low Cut", S::reverb, 20.0f, 1000.0f, 150.0f, Exp, 0, "Hz", -1, "-"),
+        F (pid::reverbWidth, "Reverb Width", S::reverb, 0.0f, 1.0f, 1.0f, Lin, 0, "", -1, "-"),
+        F (pid::reverbModulation, "Reverb Modulation", S::reverb, 0.0f, 1.0f, 0.3f, Lin, 0, "", -1, "-",
+           "Slow delay-line modulation that smooths metallic ringing."),
     };
 }
 
@@ -179,7 +210,6 @@ std::vector<ParamSpec> buildPerformanceSpecs()
         F (pid::ribbon, "Ribbon", S::performance, -1.0f, 1.0f, 0.0f, Lin, 0, "", 2, "p.77-78", "Relative displacement from touch point."),
         F (pid::modLever, "Mod Lever (Bender Up)", S::performance, 0.0f, 1.0f, 0.0f, Lin, 0, "", 1, "p.69"),
         F (pid::expression, "Expression", S::performance, 0.0f, 1.0f, 0.0f, Lin, 0, "", 11, "p.29"),
-        C (pid::quality, "Oversampling", S::performance, { "2x", "4x", "8x" }, 1, -1, "-", "nSynth only: internal voice rate multiplier."),
         C (pid::midiRouting, "MIDI Routing", S::performance, { "Keyboard Mode", "Ch N Upper / N+1 Lower" }, 0, -1, "p.99"),
         B (pid::dualPedal, "Dual Sustain Pedal", S::performance, false, -1, "-", "When enabled, CC64 channel 1 sustains UPPER and channel 2 sustains LOWER."),
         B (pid::hardwareCCMap, "Hardware CC Map", S::performance, false, -1, "", "Receive external MIDI CC and 14-bit NRPN parameter mappings."),
@@ -225,9 +255,10 @@ juce::String sectionName (Section s)
         case Section::env2:        return "ENV 2";
         case Section::lfo1:        return "LFO 1";
         case Section::perfControl: return "Performance Control";
-        case Section::voiceAssign: return "Voice Assign";
-        case Section::arpSeq:      return "Arp / Seq";
-        case Section::fx:          return "Effects";
+        case Section::voiceAssign: return "Voice / Velocity";
+        case Section::fx:          return "Chorus";
+        case Section::delay:       return "Delay";
+        case Section::reverb:      return "Reverb";
         case Section::performance: return "Performance";
     }
     return {};
@@ -265,8 +296,9 @@ juce::NormalisableRange<float> makeRange (const ParamSpec& spec)
 juce::String formatValue (const ParamSpec& spec, float v)
 {
     const juce::String unit (spec.unit);
-    if (unit == "Hz")  return v < 1000.0f ? juce::String (v, v < 100.0f ? 1 : 0) + " Hz" : juce::String (v / 1000.0f, 2) + " kHz";
+    if (unit == "Hz")  return v < 1000.0f ? juce::String (v, v < 10.0f ? 2 : v < 100.0f ? 1 : 0) + " Hz" : juce::String (v / 1000.0f, 2) + " kHz";
     if (unit == "s")   return v < 1.0f ? juce::String (v * 1000.0f, v < 0.01f ? 1 : 0) + " ms" : juce::String (v, 2) + " s";
+    if (unit == "ms")  return v < 1000.0f ? juce::String (v, v < 10.0f ? 1 : 0) + " ms" : juce::String (v / 1000.0f, 2) + " s";
     if (unit == "st")  return (v > 0.0f ? "+" : "") + juce::String (v, 2) + " st";
     if (unit == "dB")  return v <= -59.9f ? juce::String ("-inf dB") : juce::String (v, 1) + " dB";
     if (unit == "ct")  return (v > 0.0f ? "+" : "") + juce::String (juce::roundToInt (v)) + " ct";
@@ -282,6 +314,7 @@ float parseValue (const ParamSpec& spec, const juce::String& text)
     const juce::String unit (spec.unit);
     if (unit == "Hz" && t.contains ("k")) v *= 1000.0f;
     else if (unit == "s" && t.endsWith ("ms")) v *= 0.001f;
+    else if (unit == "ms" && t.endsWith ("s") && ! t.endsWith ("ms")) v *= 1000.0f;
     else if (unit.isEmpty()) v *= 0.01f; // percent
     return juce::jlimit (spec.minValue, spec.maxValue, v);
 }

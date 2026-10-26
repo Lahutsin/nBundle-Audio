@@ -72,17 +72,23 @@ const std::array<double, 16>& lfo1SyncBeats() noexcept
     return beats;
 }
 
-const std::array<double, 16>& delaySyncBeats() noexcept
+double delayDivisionBeats (int index) noexcept
 {
-    static const std::array<double, 16> beats { 1.0 / 12.0, 3.0 / 32.0, 1.0 / 8.0, 1.0 / 6.0, 3.0 / 16.0, 0.25, 1.0 / 3.0, 0.375,
-                                                0.5, 2.0 / 3.0, 0.75, 1.0, 4.0 / 3.0, 1.5, 2.0, 8.0 / 3.0 };
-    return beats;
-}
-
-double clockDivBeats (int index) noexcept
-{
-    static constexpr double beats[] = { 4.0, 2.0, 1.0, 0.5, 0.25, 0.125, 2.0 / 3.0, 1.0 / 3.0 };
-    return beats[juce::jlimit (0, 7, index)];
+    // Straight / triplet (x2/3) / dotted (x3/2) note values sorted by length; a quarter note is one beat.
+    static constexpr double beats[] = {
+        1.0 / 16.0,               // 1/64
+        1.0 / 12.0, 1.0 / 8.0,    // 1/32 T, 1/32
+        1.0 / 6.0, 3.0 / 16.0,    // 1/16 T, 1/32 D
+        1.0 / 4.0,                // 1/16
+        1.0 / 3.0, 3.0 / 8.0,     // 1/8 T, 1/16 D
+        1.0 / 2.0,                // 1/8
+        2.0 / 3.0, 3.0 / 4.0,     // 1/4 T, 1/8 D
+        1.0,                      // 1/4
+        4.0 / 3.0, 3.0 / 2.0,     // 1/2 T, 1/4 D
+        2.0, 3.0,                 // 1/2, 1/2 D
+        4.0                       // 1/1
+    };
+    return beats[juce::jlimit (0, (int) std::size (beats) - 1, index)];
 }
 
 int divisionIndex (float fader, int count) noexcept

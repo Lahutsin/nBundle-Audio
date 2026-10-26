@@ -18,6 +18,16 @@ public:
         return n;
     }
 
+    static ParamControl* findControl (juce::Component& c, const juce::String& id)
+    {
+        if (auto* control = dynamic_cast<ParamControl*> (&c); control != nullptr && control->getParamId() == id)
+            return control;
+        for (auto* child : c.getChildren())
+            if (auto* found = findControl (*child, id))
+                return found;
+        return nullptr;
+    }
+
     static int countSegmentedChoices (juce::Component& c)
     {
         int n = 0;
@@ -37,13 +47,8 @@ public:
             setParam (a.getState(), layerParamId (Layer::upper, pid::voiceMode), (float) toInt (VoiceMode::legato));
             setParam (a.getState(), perfParamId (pid::kbdMode), (float) toInt (KeyboardMode::split));
             a.getEngine().modMatrix (Layer::upper).setFixedAmount (ModSource::lfo2, ModTarget::crossMod, 0.65f);
-            SequenceStep sequenceStep;
-            sequenceStep.notes = { -7, 0, 5, 0, 0, 0, 0, 0 };
-            sequenceStep.noteCount = 3;
-            sequenceStep.rest = false;
-            sequenceStep.slide = true;
-            expect (a.getEngine().sequenceBank (Layer::upper).setLength (2, 32));
-            expect (a.getEngine().sequenceBank (Layer::upper).setStep (2, 10, sequenceStep));
+            setParam (a.getState(), layerParamId (Layer::upper, pid::reverbDecay), 7.5f);
+            setParam (a.getState(), layerParamId (Layer::lower, pid::delayDivision), (float) toInt (DelayDivision::d1_8D));
             a.setSavedEditorScale (1.25f);
             juce::MemoryBlock blob;
             a.getStateInformation (blob);
@@ -59,8 +64,34 @@ public:
             expectEquals (b.getSavedEditorScale(), 1.25f);
             expectWithinAbsoluteError (b.getEngine().modMatrix (Layer::upper).getFixedAmount (ModSource::lfo2, ModTarget::crossMod),
                                        0.65f, 1.0e-7f);
-            expect (*b.getEngine().sequenceBank (Layer::upper).snapshot()
-                         == *a.getEngine().sequenceBank (Layer::upper).snapshot());
+        }
+
+        beginTest ("state from an older version: sequencer banks and removed parameters are ignored");
+        {
+            NSynthAudioProcessor a;
+            setParam (a.getState(), layerParamId (Layer::upper, pid::lpf), 2345.0f);
+            juce::MemoryBlock blob;
+            a.getStateInformation (blob);
+            auto xml = NSynthAudioProcessor::getXmlFromBinary (blob.getData(), (int) blob.getSize());
+            expect (xml != nullptr);
+            auto legacy = juce::ValueTree::fromXml (*xml);
+            juce::ValueTree sequencer ("SEQUENCER");
+            sequencer.setProperty ("layer", 0, nullptr);
+            legacy.addChild (sequencer, -1, nullptr);
+            juce::ValueTree oldParam ("PARAM");
+            oldParam.setProperty ("id", "up_arp_on", nullptr);
+            oldParam.setProperty ("value", 1.0f, nullptr);
+            legacy.addChild (oldParam, -1, nullptr);
+            juce::MemoryBlock legacyBlob;
+            NSynthAudioProcessor::copyXmlToBinary (*legacy.createXml(), legacyBlob);
+
+            NSynthAudioProcessor b;
+            b.setStateInformation (legacyBlob.getData(), (int) legacyBlob.getSize());
+            expectWithinAbsoluteError (b.getState().getRawParameterValue (layerParamId (Layer::upper, pid::lpf))->load(), 2345.0f, 0.5f);
+            juce::MemoryBlock resaved;
+            b.getStateInformation (resaved);
+            auto resavedXml = NSynthAudioProcessor::getXmlFromBinary (resaved.getData(), (int) resaved.getSize());
+            expect (resavedXml != nullptr && resavedXml->getChildByName ("SEQUENCER") == nullptr);
         }
 
         beginTest ("performance file save/load round trip");
@@ -94,11 +125,6 @@ public:
             const auto cutoffId = layerParamId (Layer::upper, pid::lpf);
             setParam (state, cutoffId, 812.0f);
             p.getEngine().modMatrix (Layer::upper).setFixedAmount (ModSource::ribbon, ModTarget::waveMod, 0.3f);
-            SequenceStep savedStep;
-            savedStep.notes[0] = -12;
-            savedStep.noteCount = 1;
-            savedStep.rest = false;
-            expect (p.getEngine().sequenceBank (Layer::upper).setStep (0, 0, savedStep));
             const auto file = juce::File::getSpecialLocation (juce::File::tempDirectory)
                                   .getNonexistentChildFile ("patch", ".nsynthpatch");
             juce::String error;
@@ -112,17 +138,9 @@ public:
             expect (! p.isPatchDirty (Layer::upper));
             expectWithinAbsoluteError (p.getEngine().modMatrix (Layer::upper).getFixedAmount (ModSource::ribbon, ModTarget::waveMod),
                                        0.3f, 1.0e-7f);
-            expect (p.getEngine().sequenceBank (Layer::upper).snapshot()->slots[0].steps[0] == savedStep);
             expectEquals ((int) state.getRawParameterValue (waveId)->load(), toInt (Dds1Wave::saw));
             expect (p.setPatchCompare (Layer::upper, false));
             expect (p.isPatchDirty (Layer::upper));
-            SequenceStep editedStep;
-            editedStep.notes[0] = 7;
-            editedStep.noteCount = 1;
-            editedStep.rest = false;
-            expect (p.getEngine().sequenceBank (Layer::upper).setStep (0, 0, editedStep));
-            expect (p.isPatchDirty (Layer::upper));
-            expect (p.getEngine().sequenceBank (Layer::upper).snapshot()->slots[0].steps[0] == editedStep);
             expectWithinAbsoluteError (p.getEngine().modMatrix (Layer::upper).getFixedAmount (ModSource::ribbon, ModTarget::waveMod),
                                        -0.3f, 1.0e-7f);
             expectEquals ((int) state.getRawParameterValue (waveId)->load(), toInt (Dds1Wave::alt));
@@ -130,10 +148,49 @@ public:
             setParam (state, cutoffId, 1200.0f);
             expect (p.loadPatch (Layer::upper, file, &error), error);
             expect (! p.isPatchDirty (Layer::upper));
-            expect (p.getEngine().sequenceBank (Layer::upper).snapshot()->slots[0].steps[0] == savedStep);
             expectWithinAbsoluteError (state.getRawParameterValue (cutoffId)->load(), 812.0f, 0.5f);
             expect (! p.loadPatch (Layer::lower, file, &error));
             expectEquals (p.getPatchName (Layer::upper), file.getFileNameWithoutExtension());
+            file.deleteFile();
+        }
+
+        beginTest ("patches from older versions load: sequencer data and removed parameters are skipped, new ones default");
+        {
+            NSynthAudioProcessor p;
+            auto& state = p.getState();
+            setParam (state, layerParamId (Layer::upper, pid::lpf), 640.0f);
+            setParam (state, layerParamId (Layer::upper, pid::reverbMix), 0.3f);
+            const auto file = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                                  .getNonexistentChildFile ("legacy", ".nsynthpatch");
+            juce::String error;
+            expect (p.savePatch (Layer::upper, file, &error), error);
+
+            auto xml = juce::XmlDocument::parse (file);
+            expect (xml != nullptr);
+            auto tree = juce::ValueTree::fromXml (*xml);
+            for (int i = tree.getNumChildren() - 1; i >= 0; --i)
+                if (tree.getChild (i).getProperty ("id").toString() == layerParamId (Layer::upper, pid::reverbMix))
+                    tree.removeChild (i, nullptr);
+            juce::ValueTree sequencer ("SEQUENCER");
+            sequencer.setProperty ("layer", 0, nullptr);
+            tree.addChild (sequencer, -1, nullptr);
+            juce::ValueTree oldParam ("PARAM");
+            oldParam.setProperty ("id", "up_seq_slot", nullptr);
+            oldParam.setProperty ("value", 0.4f, nullptr);
+            tree.addChild (oldParam, -1, nullptr);
+            expect (tree.createXml()->writeTo (file));
+
+            setParam (state, layerParamId (Layer::upper, pid::lpf), 5000.0f);
+            expect (p.loadPatch (Layer::upper, file, &error), error);
+            expectWithinAbsoluteError (state.getRawParameterValue (layerParamId (Layer::upper, pid::lpf))->load(), 640.0f, 0.5f);
+            expectEquals (state.getRawParameterValue (layerParamId (Layer::upper, pid::reverbMix))->load(), 0.0f);
+
+            juce::ValueTree wrongLayer ("PARAM");
+            wrongLayer.setProperty ("id", "lo_lpf", nullptr);
+            wrongLayer.setProperty ("value", 0.5f, nullptr);
+            tree.addChild (wrongLayer, -1, nullptr);
+            expect (tree.createXml()->writeTo (file));
+            expect (! p.loadPatch (Layer::upper, file, &error));
             file.deleteFile();
         }
 
@@ -237,11 +294,24 @@ public:
             ed->showWaveBrowserPage (true);
             expect (ed->getWaveBrowserPage().isVisible());
             ed->showWaveBrowserPage (false);
-            expect (! ed->getSequencePage().isVisible());
-            ed->showSequencePage (true);
-            expect (ed->getSequencePage().isVisible());
-            ed->getSequencePage().setLayer (Layer::lower);
-            ed->showSequencePage (false);
+
+            // Shared cells: delay TIME in ms or as a division, static velocity or curve.
+            for (auto layer : { Layer::upper, Layer::lower })
+            {
+                auto* ms = findControl (ed->getContent(), layerParamId (layer, pid::delayMs));
+                auto* division = findControl (ed->getContent(), layerParamId (layer, pid::delayDivision));
+                auto* fixed = findControl (ed->getContent(), layerParamId (layer, pid::velFixed));
+                auto* curve = findControl (ed->getContent(), layerParamId (layer, pid::velCurve));
+                expect (ms != nullptr && division != nullptr && fixed != nullptr && curve != nullptr);
+                expect (ms->getBounds() == division->getBounds() && fixed->getBounds() == curve->getBounds());
+                expect (division->isVisible() && ! ms->isVisible());      // SYNC is the default
+                expect (curve->isVisible() && ! fixed->isVisible());      // DYNAMIC is the default
+                setParam (p.getState(), layerParamId (layer, pid::delaySync), 0.0f);
+                setParam (p.getState(), layerParamId (layer, pid::velMode), (float) toInt (VelocityMode::fixed));
+                ed->updateSwitchedControls();
+                expect (ms->isVisible() && ! division->isVisible());
+                expect (fixed->isVisible() && ! curve->isVisible());
+            }
 
             for (float s : { 0.5f, 0.75f, 1.0f, 1.5f, 2.0f })
             {

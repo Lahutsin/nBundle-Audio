@@ -34,8 +34,8 @@ struct SmoothedValue
     }
 };
 
-// One hardware voice (a mono signal path). A binaural "super voice" is two of
-// these playing the same note on the left and right channel.
+// One hardware voice (a mono signal path). A binaural "super voice" is two (x1) or
+// four (x2, a detuned pair per ear) of these playing the same note on the left and right channel.
 class Voice
 {
 public:
@@ -53,6 +53,8 @@ public:
         double lfo2Phase { 0.0 };     // layer LFO2 phase => voices start in sync
         bool retrigger { true };      // false: legato (no envelope retrigger)
         uint64_t age { 0 };
+        float twinSign { 0.0f };      // binaural x2: -1 / +1 x BINAURAL DETUNE
+        float gain { 1.0f };
     };
 
     static constexpr float kOutputGain = 0.2f;
@@ -103,12 +105,15 @@ public:
     static float portamentoSecondsPerOctave (float fader) noexcept { return 10.0f * fader * fader * fader; }
     static float triStateAmount (TriState t) noexcept { return t == TriState::off ? 0.0f : t == TriState::half ? 0.5f : 1.0f; }
     static float fastExp2 (float x) noexcept;
+    static constexpr float kOpenStretchHz = 8000.0f;  // see openLadderCutoff()
+    static constexpr float kLpfMaxHz = 25000.0f;      // top of the LPF CUTOFF range
 
 private:
     void applyEnvelopeSettings (const LayerSnapshot& p) noexcept;
     void triggerEnvelopes() noexcept;
     float lfo1RateHz (const LayerSnapshot& p, const VoiceContext& ctx) const noexcept;
     float driftWalk (float& value, float& target, int& counter) noexcept;
+    float openLadderCutoff (float hz) noexcept;
 
     double sampleRate { 44100.0 };
     const WaveBank* waveBank { nullptr };
@@ -128,6 +133,7 @@ private:
     float channelPressure { 0.0f }, midiTimbre { 0.0f };
     bool isMpeMember { false };
     float pitchOffset { 0.0f };
+    float twinSign { 0.0f }, voiceGain { 1.0f };
     // double: per-sample glide steps (~1e-5 st) would be distorted by float rounding.
     double currentPitch { 60.0 }, targetPitch { 60.0 };
     bool hasPlayed { false };
@@ -136,6 +142,7 @@ private:
     uint64_t age { 0 };
     float envTimeScale { 1.0f };
     float lastDds1 { 0.0f }, delayedDds1 { 0.0f };
+    float openTopHz { 25000.0f }, openExponent { 1.0f }, stretchInput { -1.0f }, stretchOutput { 0.0f };
 
     // drift random walks: dds1 pitch, dds2 pitch, cutoff
     float driftValue[3] {}, driftTarget[3] {};

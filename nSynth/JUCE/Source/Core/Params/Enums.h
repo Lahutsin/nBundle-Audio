@@ -28,12 +28,19 @@ enum class Lfo2Wave { sine = 0, revSaw, sampleHold, square, saw, noise };
 enum class Lfo2Trigger { trig = 0, atPlusTrig, on };
 enum class VoiceMode { solo = 0, legato, poly1, poly2 };
 enum class UnisonSize { half = 0, all, octave, fifthOctave };
-enum class ArpMode { up = 0, down, upDown, random, seq };
-enum class ClockDiv { whole = 0, half, quarter, eighth, sixteenth, thirtySecond, quarterTriplet, eighthTriplet };
+// x1: one voice per ear; x2: a detuned pair of voices per ear (4 voices per note).
+enum class BinauralMode { off = 0, x1, x2 };
+enum class VelocityMode { dynamic = 0, fixed };
+// Number of modulated chorus voices per side: I = 1, II = 2, I + II = 3.
 enum class ChorusMode { off = 0, one, two, oneTwo };
+// Tempo-synced delay divisions, strictly short -> long (T = triplet, D = dotted).
+enum class DelayDivision
+{
+    d1_64 = 0, d1_32T, d1_32, d1_16T, d1_32D, d1_16, d1_8T, d1_16D, d1_8,
+    d1_4T, d1_8D, d1_4, d1_2T, d1_4D, d1_2, d1_2D, d1_1
+};
 
 enum class KeyboardMode { single = 0, dual, split };
-enum class Quality { x2 = 0, x4, x8 };
 enum class MidiRouting { keyboardMode = 0, channelPerLayer };
 
 template <typename E>

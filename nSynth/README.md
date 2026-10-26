@@ -1,9 +1,10 @@
 # nSynth Build Guide
 
-This repository contains the JUCE version of **nSynth** — a 20-voice,
+This repository contains the JUCE version of **nSynth** — a 64-voice,
 bi-timbral hybrid digital/analog-modeled polyphonic synthesizer with
 binaural stereo voice pairing, dual-layer modulation, 32 custom wavetable
-slots, a 64-step polyphonic sequencer, arpeggiator, and studio effects.
+slots, adjustable velocity, and studio effects (chorus, tempo-synced delay,
+reverb).
 
 ![nSynth plugin UI](docs/Plugin.png)
 
@@ -24,28 +25,38 @@ preset-manager design and phased roadmap live in [docs/](./docs):
 ## Current Status
 
 The synthesis core, dual-layer voice architecture, modulation matrix,
-wavetable/sequencer/arpeggiator systems, MIDI/MPE engine, compact UI,
-multi-core scheduler, and factory content are implemented:
+wavetable system, MIDI/MPE engine, compact UI, multi-core scheduler, and
+factory content are implemented:
 
 - DDS1: 7-core "super" oscillator (OFF / 1/2 / ON, detune), sine/saw/square/
   triangle/noise/alt waves, morphing, 32 alternative waveforms (`.ws6` I/O).
 - DDS2: algorithmic polyBLEP oscillator, NORM/RING/SYNC, LFO range, sub oscillator.
 - Cross mod (exponential FM), mixer, 1-pole HPF -> 4-pole ZDF ladder LPF with
-  drive 0/1/2, per-stage analog saturation, keytrack, self-oscillation; VCA with ENV2/fixed envelopes, dynamics.
+  drive 0/1/2, per-stage analog saturation, keytrack, self-oscillation; the fully open filter stays flat
+  across the audible band. VCA with ENV2/fixed envelopes.
 - ENV1 (attack hold, decay hold, loop, inverted, keytrack), ENV2, per-voice LFO1
   (LR phase, HF modes) and LFO2 (trigger modes), drift.
-- 20-voice pool shared by UPPER/LOWER: Single/Dual/Split, binaural voice pairs,
-  Solo/Legato/Poly 1/Poly 2, unison sizes, portamento, hold/sustain.
-- Per-layer chorus (I/II/I+II) -> delay (send/feedback/freeze/sync).
-- 2x/4x/8x internal oversampling; Mix + optional Upper/Lower outputs;
+- 64-voice pool shared by UPPER/LOWER: Single/Dual/Split, Solo/Legato/Poly 1/Poly 2,
+  unison sizes, portamento, hold/sustain.
+- Binaural Off / x1 / x2: x1 plays one voice per ear (32 stereo notes in Single),
+  x2 (default) a mirrored-detuned pair per ear, 4 voices per note (16 notes in Single,
+  8 per layer in Dual/Split), with adjustable BINAURAL DETUNE.
+- Velocity: Dynamic (played velocity through an adjustable curve) or Static
+  (fixed velocity), plus sensitivity for level and brightness.
+- Per-layer air shelf -> chorus (I/II/I+II voices, rate, depth, delay, feedback,
+  width, mix) -> delay (tempo divisions 1/64..1/1 incl. triplets/dotted or 1..2000 ms,
+  feedback, mix, ping-pong, low/high cut, freeze) -> reverb (size, decay, pre-delay,
+  high/low cut, width, modulation, mix).
+- Fixed 2x internal oversampling; Mix + optional Upper/Lower outputs;
   lock-free atomic work-stealing across all CPU cores.
 - Compact editor generated from the parameter registry with uniform scaling 50-200 %.
 - Performance presets (`.nsynthperf`), layer patches (`.nsynthpatch`), layer init/copy.
 
-Phase 6 adds 128 factory patches, 16 performances and an offline DSP/CPU
-analysis target. Verified: `nSynthTests` (59,060 checks, 0 failures), successful
-AU validation (178 parameters), and successful AU/VST3 builds. Manual
-host/controller/pluginval checks remain open. Current verification status is in
+Factory content: 112 patches in seven categories and 16 performances, plus an
+offline DSP/CPU analysis target. Verified on Linux: `nSynthTests` (68,124 checks,
+0 failures). AU validation and the AU build have not been re-run since the
+voice/effects rework (now 211 parameters). Manual host/controller/pluginval
+checks remain open. Current verification status is in
 [docs/07-QA-AND-VALIDATION.md](./docs/07-QA-AND-VALIDATION.md), with phase
 details in [docs/06-ROADMAP.md](./docs/06-ROADMAP.md).
 

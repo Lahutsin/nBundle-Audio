@@ -58,8 +58,6 @@ set(NSYNTH_CORE_SOURCES
   Source/Core/Engine/VoiceRenderPool.cpp
   Source/Core/Engine/ModMatrix.h
   Source/Core/Engine/ModMatrix.cpp
-  Source/Core/Engine/SequenceBank.h
-  Source/Core/Engine/SequenceBank.cpp
   Source/Core/Engine/SynthLayer.h
   Source/Core/Engine/SynthLayer.cpp
   Source/Core/Engine/SynthEngine.h
@@ -194,7 +192,6 @@ if(NSYNTH_BUILD_TESTS)
     Source/Tests/EngineTests.cpp
     Source/Tests/ModMatrixTests.cpp
     Source/Tests/MidiInputTests.cpp
-    Source/Tests/SeqTests.cpp
     Source/Tests/PluginTests.cpp
     Source/Tests/FactoryPresetTests.cpp
   )

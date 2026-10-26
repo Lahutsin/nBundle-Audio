@@ -12,7 +12,7 @@ struct Category
     std::array<const char*, 16> names;
 };
 
-const std::array<Category, 8> categories {{
+const std::array<Category, 7> categories {{
     { "Pads", { "Afterglow", "Blue Cathedral", "Cloud Atlas", "Distant Shore",
                 "Echowood", "Frosted Glass", "Gravity Well", "Hollow Moon",
                 "Indigo Current", "Jade Horizon", "Keystone", "Lumen Field",
@@ -40,11 +40,7 @@ const std::array<Category, 8> categories {{
     { "FX", { "Aether Engine", "Broken Compass", "Clockwork Tide", "Drift Signal",
               "Eventide Wire", "Faultline", "Glass Weather", "Harmonic Dust",
               "Interference", "Junction", "Kepler Drift", "Lunar Debris",
-              "Magnetic North", "Null Garden", "Orbit Decay", "Phase Bloom" } },
-    { "Arp-Seq", { "Ascending Rain", "Blue Bicycle", "Circuit Garden", "Dotted Glass",
-                   "Eightfold", "Folding Path", "Glimmer Grid", "Hidden Steps",
-                   "Iris Pattern", "Jigsaw Motion", "Kaleido", "Lattice Runner",
-                   "Moving Statues", "Night Geometry", "Open Circuit", "Prism Walk" } }
+              "Magnetic North", "Null Garden", "Orbit Decay", "Phase Bloom" } }
 }};
 
 juce::String paramId (Layer layer, const char* suffix)
@@ -79,11 +75,12 @@ void configureLayer (NSynthAudioProcessor& processor, Layer layer, int category,
     processor.initLayer (layer);
     const float v = (float) (variation % 16) / 15.0f;
 
-    setPlain (processor, layer, pid::binaural, category == 2 || category == 3 || category == 7 ? 0.0f : 1.0f);
+    setPlain (processor, layer, pid::binaural, (float) toInt (category == 2 || category == 3 ? BinauralMode::off : BinauralMode::x2));
+    setPlain (processor, layer, pid::binauralDetune, category == 0 || category == 5 ? 9.0f : 6.0f);
     setPlain (processor, layer, pid::voiceMode, toInt (VoiceMode::poly1));
     setPlain (processor, layer, pid::vcaEnvMode, toInt (VcaEnvMode::env2));
     setPlain (processor, layer, pid::vcaEnv, 1.0f);
-    setPlain (processor, layer, pid::vcaDynamics, variation % 3 == 0 ? toInt (TriState::half) : toInt (TriState::off));
+    setPlain (processor, layer, pid::velSens, variation % 3 == 0 ? 0.6f : 0.35f);
     setPlain (processor, layer, pid::dds1Range, toInt (Dds1Range::ft8));
     setPlain (processor, layer, pid::dds2Range, toInt (Dds2Range::ft8));
     setPlain (processor, layer, pid::dds2Mode, toInt (Dds2Mode::normOrSubOff));
@@ -96,8 +93,16 @@ void configureLayer (NSynthAudioProcessor& processor, Layer layer, int category,
     setPlain (processor, layer, pid::bendDds, 2.0f + 2.0f * (variation % 4));
     setPlain (processor, layer, pid::chorus, variation % 4 == 0 ? toInt (ChorusMode::oneTwo)
                                                                    : toInt (ChorusMode::one));
-    setPlain (processor, layer, pid::delaySend, 0.05f + 0.18f * v);
+    setPlain (processor, layer, pid::chorusRate, variation % 4 == 0 ? 0.9f : 0.5f + 0.3f * v);
+    setPlain (processor, layer, pid::delayMix, 0.03f + 0.09f * v);
     setPlain (processor, layer, pid::delayFeedback, 0.22f + 0.25f * v);
+    setPlain (processor, layer, pid::delayDivision, toInt (variation % 3 == 0 ? DelayDivision::d1_8D
+                                                         : variation % 3 == 1 ? DelayDivision::d1_4
+                                                                              : DelayDivision::d1_8));
+    setPlain (processor, layer, pid::delayPingPong, variation % 2 == 0 ? 1.0f : 0.0f);
+    setPlain (processor, layer, pid::reverbMix, 0.08f + 0.1f * v);
+    setPlain (processor, layer, pid::reverbSize, 0.45f + 0.3f * v);
+    setPlain (processor, layer, pid::reverbDecay, 1.4f + 1.6f * v);
 
     switch (category)
     {
@@ -108,7 +113,11 @@ void configureLayer (NSynthAudioProcessor& processor, Layer layer, int category,
             setPlain (processor, layer, pid::env2Release, varied (variation, 4.2f, 1.7f, 2.3f, 6.0f));
             setPlain (processor, layer, pid::lfo2Vca, 0.04f + 0.12f * v);
             setPlain (processor, layer, pid::lfo2Vcf, 0.03f + 0.1f * v);
-            setPlain (processor, layer, pid::delaySend, 0.2f + 0.22f * v);
+            setPlain (processor, layer, pid::delayMix, 0.1f + 0.11f * v);
+            setPlain (processor, layer, pid::reverbMix, 0.25f + 0.15f * v);
+            setPlain (processor, layer, pid::reverbSize, 0.75f + 0.2f * v);
+            setPlain (processor, layer, pid::reverbDecay, 4.0f + 4.0f * v);
+            setPlain (processor, layer, pid::reverbPreDelay, 30.0f);
             break;
 
         case 1: // Leads
@@ -134,6 +143,9 @@ void configureLayer (NSynthAudioProcessor& processor, Layer layer, int category,
             setPlain (processor, layer, pid::lpf, 180.0f + 1100.0f * v);
             setPlain (processor, layer, pid::vcfEnv, 0.18f + 0.4f * v);
             setPlain (processor, layer, pid::portamento, variation % 3 == 0 ? 0.1f : 0.0f);
+            setPlain (processor, layer, pid::chorus, toInt (ChorusMode::off));
+            setPlain (processor, layer, pid::delayMix, 0.0f);
+            setPlain (processor, layer, pid::reverbMix, 0.0f);
             break;
 
         case 3: // Keys
@@ -144,6 +156,7 @@ void configureLayer (NSynthAudioProcessor& processor, Layer layer, int category,
             setPlain (processor, layer, pid::vcfEnv, 0.05f + 0.2f * v);
             setPlain (processor, layer, pid::mix, 0.28f + 0.3f * v);
             setPlain (processor, layer, pid::chorus, variation % 2 == 0 ? toInt (ChorusMode::off) : toInt (ChorusMode::two));
+            setPlain (processor, layer, pid::velSens, 0.7f);
             break;
 
         case 4: // Plucks
@@ -154,7 +167,9 @@ void configureLayer (NSynthAudioProcessor& processor, Layer layer, int category,
             setPlain (processor, layer, pid::env2Sustain, 0.1f + 0.22f * v);
             setPlain (processor, layer, pid::env2Release, 0.18f + 0.42f * v);
             setPlain (processor, layer, pid::vcfEnv, 0.2f + 0.48f * v);
-            setPlain (processor, layer, pid::delaySend, 0.12f + 0.2f * v);
+            setPlain (processor, layer, pid::delayMix, 0.08f + 0.12f * v);
+            setPlain (processor, layer, pid::delayDivision, toInt (DelayDivision::d1_8D));
+            setPlain (processor, layer, pid::velSens, 0.6f);
             break;
 
         case 5: // Brass and strings
@@ -177,42 +192,13 @@ void configureLayer (NSynthAudioProcessor& processor, Layer layer, int category,
             setPlain (processor, layer, pid::res, 0.2f + 0.52f * v);
             setPlain (processor, layer, pid::env2Attack, 0.01f + 0.25f * v);
             setPlain (processor, layer, pid::env2Release, 0.4f + 1.8f * v);
-            setPlain (processor, layer, pid::delaySend, 0.35f + 0.45f * v);
+            setPlain (processor, layer, pid::delayMix, 0.2f + 0.2f * v);
+            setPlain (processor, layer, pid::reverbMix, 0.2f + 0.2f * v);
+            setPlain (processor, layer, pid::reverbDecay, 3.0f + 6.0f * v);
             setPlain (processor, layer, pid::lfo2Wave, toInt (Lfo2Wave::sampleHold));
             setPlain (processor, layer, pid::lfo2Dds, 0.05f + 0.35f * v);
             break;
 
-        case 7: // Arp and sequencer
-            setPlain (processor, layer, pid::dds1Wave, variation % 3 == 0 ? toInt (Dds1Wave::square) : toInt (Dds1Wave::saw));
-            setPlain (processor, layer, pid::dds2Wave, toInt (Dds2Wave::triangle));
-            setPlain (processor, layer, pid::env2Attack, 0.002f);
-            setPlain (processor, layer, pid::env2Release, 0.22f + 0.35f * v);
-            setPlain (processor, layer, pid::arpOn, 1.0f);
-            setPlain (processor, layer, pid::arpMode, toInt (ArpMode::seq));
-            setPlain (processor, layer, pid::seqSlot, 0.0f);
-            setPlain (processor, layer, pid::clockDiv,
-                      (float) toInt (variation % 2 == 0 ? ClockDiv::eighth : ClockDiv::sixteenth));
-            {
-                auto& bank = processor.getEngine().sequenceBank (layer);
-                bank.clearSlot (0);
-                bank.setLength (0, 8 + (variation % 3) * 4);
-                const int count = 8 + (variation % 3) * 4;
-                const std::array<int, 8> steps { 0, 7, 12, 5, 3, 10, 14, 7 };
-                for (int stepIndex = 0; stepIndex < count; ++stepIndex)
-                {
-                    SequenceStep step;
-                    step.rest = stepIndex % (4 + variation % 3) == 3;
-                    step.noteCount = step.rest ? 0 : (uint8_t) (1 + ((stepIndex + variation) % 5 == 0));
-                    step.notes[0] = (int8_t) (steps[(size_t) (stepIndex % 8)] + (variation % 3) * 2);
-                    if (step.noteCount > 1)
-                        step.notes[1] = (int8_t) (step.notes[0] + 7 + variation % 4);
-                    step.accent = stepIndex % 4 == 0;
-                    step.slide = stepIndex % 5 == 4;
-                    step.gatePercent = (uint8_t) (66 + (variation % 4) * 8);
-                    bank.setStep (0, stepIndex, step);
-                }
-            }
-            break;
     }
 
     const auto source = (ModSource) (variation % (int) ModSource::count);
@@ -224,10 +210,9 @@ bool writePatch (NSynthAudioProcessor& processor, Layer layer, const juce::File&
 {
     juce::ValueTree tree ("NSYNTH_PATCH");
     tree.setProperty ("layer", toInt (layer), nullptr);
-    tree.setProperty ("stateVersion", 3, nullptr);
+    tree.setProperty ("stateVersion", 4, nullptr);
     tree.setProperty ("factoryContent", true, nullptr);
     tree.addChild (processor.getEngine().modMatrix (layer).toValueTree (toInt (layer)), -1, nullptr);
-    processor.getEngine().appendSequenceState (tree, layer);
     for (const auto& spec : getLayerParamSpecs())
     {
         auto* parameter = processor.getState().getParameter (layerParamId (layer, spec.suffix));
@@ -259,8 +244,8 @@ void configurePerformance (NSynthAudioProcessor& processor, int index)
         if (auto* parameter = processor.getState().getParameter (perfParamId (spec.suffix)))
             parameter->setValueNotifyingHost (parameter->getDefaultValue());
 
-    const int upperCategory = index % 8;
-    const int lowerCategory = (index + 3) % 8;
+    const int upperCategory = index % (int) categories.size();
+    const int lowerCategory = (index + 3) % (int) categories.size();
     configureLayer (processor, Layer::upper, upperCategory, index);
     configureLayer (processor, Layer::lower, lowerCategory, 15 - index);
 

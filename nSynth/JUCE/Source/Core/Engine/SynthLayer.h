@@ -5,21 +5,23 @@
 #include "Voice.h"
 #include "VoiceRenderPool.h"
 #include "ModMatrix.h"
-#include "SequenceBank.h"
 #include "../DSP/Effects.h"
 
 namespace nsynth
 {
 // One layer (UPPER or LOWER): note handling / voice assignment over the hardware
-// voices it currently owns, oversampled rendering, pan and the chorus -> delay chain.
+// voices it currently owns, 2x oversampled rendering, pan, air shelf and the
+// chorus -> delay -> reverb chain.
 class SynthLayer
 {
 public:
+    static constexpr int kOversamplingFactor = 2;
+    static constexpr int kMaxVoices = 64;
+
     SynthLayer (juce::AudioProcessorValueTreeState& state, Layer id);
 
     void prepare (double hostSampleRate, int maxBlockSize, VoiceRenderPool& renderPool);
-    void setQuality (Quality q);
-    int getOversamplingFactor() const noexcept { return 1 << (toInt (quality) + 1); }
+    static constexpr int getOversamplingFactor() noexcept { return kOversamplingFactor; }
     float getLatencySamples() const noexcept;
 
     // Voices owned by this layer (changes with SINGLE/DUAL/SPLIT). Kills current notes.
@@ -36,8 +38,8 @@ public:
     void setMidiExpression (int midiChannel, float bend, float bendSensitivity, float tuning,
                             float pressure, float timbre, bool mpeMember);
     void allNotesOff (bool immediate);
-    void playSequenceStep (const SequenceStep& step, int transpose, bool accent);
-    void releaseSequenceNotes() noexcept;
+    // Velocity mode / curve applied to an incoming 0..1 note velocity.
+    float shapeVelocity (float velocity) const noexcept;
 
     // Render voices for host samples [hostStart, hostStart + hostNum) into the oversampled buffer.
     void renderSegment (int hostStart, int hostNum) noexcept;
@@ -52,10 +54,10 @@ public:
 
     // Test hooks
     const std::vector<Voice*>& getVoices() const noexcept { return voices; }
-    int getUnitSize() const noexcept { return snap.binaural ? 2 : 1; }
+    int getUnitSize() const noexcept { return snap.binaural == BinauralMode::x2 ? 4 : snap.binaural == BinauralMode::x1 ? 2 : 1; }
 
 private:
-    static constexpr int kMaxRenderVoices = 20;
+    static constexpr int kMaxRenderVoices = kMaxVoices;
 
     struct Unit { int index; };
     struct VoiceRenderTask
@@ -103,25 +105,24 @@ private:
     std::vector<int> sustainedNotes;   // released while sustain/hold active
     std::vector<int> sustainedChannels;
     std::vector<float> heldVelocities;
-    std::array<int, SequenceStep::kMaxNotes> sequenceUnits {}, sequenceNotes {};
-    int sequenceUnitCount { 0 };
     bool pedal { false };
-    bool lastBinaural { true };
+    BinauralMode lastBinaural { BinauralMode::x2 };
     VoiceMode lastVoiceMode { VoiceMode::poly1 };
     int monoUnits { 0 };
 
     double hostRate { 44100.0 };
     int maxBlock { 512 };
-    Quality quality { Quality::x4 };
     VoiceRenderPool* renderPool { nullptr };
-    std::array<std::unique_ptr<juce::dsp::Oversampling<float>>, 3> oversamplers;
+    std::unique_ptr<juce::dsp::Oversampling<float>> oversampler;
     juce::AudioBuffer<float> hostScratch;
     juce::AudioBuffer<float> parallelScratch;
     juce::dsp::AudioBlock<float> osBlock;
     double lfo2MasterPhase { 0.0 };
 
+    AirShelf air;
     StereoChorus chorus;
     StereoDelay delay;
+    StereoReverb reverb;
     juce::Random rng;
 };
 } // namespace nsynth

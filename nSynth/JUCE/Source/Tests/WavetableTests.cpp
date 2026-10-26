@@ -159,6 +159,7 @@ public:
             auto file = juce::File::getSpecialLocation (juce::File::tempDirectory)
                             .getNonexistentChildFile ("nsynth_silence", ".wav");
             juce::AudioBuffer<float> source (1, 64);
+            source.clear(); // AudioBuffer does not zero its memory
             juce::WavAudioFormat wav;
             std::unique_ptr<juce::OutputStream> output = file.createOutputStream();
             expect (output != nullptr);

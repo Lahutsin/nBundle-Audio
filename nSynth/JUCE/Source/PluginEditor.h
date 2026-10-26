@@ -50,12 +50,13 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> buttonAttachment;
 };
 
-// Titled panel laying its controls out on a grid (columns x rows).
+// Titled panel laying its controls out on a grid (columns x rows). A control added with
+// sharesPreviousCell occupies the same cell as the one before it (only one is shown at a time).
 class SectionPanel : public juce::Component
 {
 public:
     SectionPanel (juce::String title, juce::Colour accent, int columns);
-    void add (std::unique_ptr<ParamControl> control);
+    void add (std::unique_ptr<ParamControl> control, bool sharesPreviousCell = false);
     int getColumns() const noexcept { return columns; }
     void paint (juce::Graphics&) override;
     void resized() override;
@@ -65,6 +66,7 @@ private:
     juce::Colour accent;
     int columns;
     std::vector<std::unique_ptr<ParamControl>> controls;
+    std::vector<std::vector<ParamControl*>> cells;
 };
 
 class ModMatrixGrid : public juce::Component,
@@ -134,37 +136,6 @@ private:
     std::unique_ptr<juce::FileChooser> chooser;
 };
 
-class SequencePage : public juce::Component,
-                     private juce::Timer
-{
-public:
-    SequencePage (juce::AudioProcessorValueTreeState& state, nsynth::SynthEngine& engine, nsynth::Layer layer);
-    ~SequencePage() override;
-    void setLayer (nsynth::Layer layer);
-    void resized() override;
-    std::function<void()> onClose;
-
-private:
-    void timerCallback() override;
-    void refreshControls();
-    void commitSelectedStep();
-    void selectStep (int step);
-    void chooseSlot();
-
-    juce::AudioProcessorValueTreeState& state;
-    nsynth::SynthEngine& engine;
-    nsynth::Layer layer;
-    int selectedStep { 0 };
-    juce::ComboBox slotChoice;
-    std::vector<std::unique_ptr<juce::TextButton>> stepButtons;
-    juce::Slider lengthSlider, noteSlider, gateSlider;
-    juce::ToggleButton slideButton { "SLIDE" }, accentButton { "ACCENT" }, restButton { "REST" }, recordButton { "RECORD MIDI" };
-    juce::TextButton clearSlotButton { "CLEAR SLOT" }, saveBankButton { "SAVE BANK" },
-                     loadBankButton { "LOAD BANK" }, closeButton { "CLOSE" };
-    juce::Label status, noteLabel { {}, "SEMITONE OFFSET" }, gateLabel { {}, "GATE %" }, lengthLabel { {}, "LENGTH" };
-    std::unique_ptr<juce::FileChooser> chooser;
-};
-
 class NSynthAudioProcessorEditor : public juce::AudioProcessorEditor,
                                    private juce::Timer
 {
@@ -185,15 +156,22 @@ public:
     void showModMatrixPage (bool shouldShow) { modMatrixPage->setVisible (shouldShow); }
     WaveBrowserPage& getWaveBrowserPage() noexcept { return *waveBrowserPage; }
     void showWaveBrowserPage (bool shouldShow) { waveBrowserPage->setVisible (shouldShow); }
-    SequencePage& getSequencePage() noexcept { return *sequencePage; }
-    void showSequencePage (bool shouldShow) { sequencePage->setVisible (shouldShow); }
+    // Cells shared by two controls (delay ms / division, static velocity / curve).
+    void updateSwitchedControls();
 
 private:
     struct LayerUi
     {
         std::vector<std::unique_ptr<SectionPanel>> rowSections;   // DDS1 .. DDS MOD (always visible)
-        std::vector<std::unique_ptr<SectionPanel>> sharedSections; // perf control, voice, arp, fx (bottom row)
+        std::vector<std::unique_ptr<SectionPanel>> sharedSections; // perf control, voice, delay, reverb, chorus (bottom row)
         juce::Label rowLabel;
+    };
+
+    struct SwitchedCell
+    {
+        ParamControl* whenOff { nullptr };
+        ParamControl* whenOn { nullptr };
+        std::atomic<float>* condition { nullptr };
     };
 
     void timerCallback() override;
@@ -212,6 +190,7 @@ private:
     uint32_t lastMidiParameterDrops { 0 };
 
     std::array<LayerUi, 2> layers;
+    std::vector<SwitchedCell> switchedCells;
     nsynth::Layer bottomLayer { nsynth::Layer::upper };
 
     juce::Label title, presetName, voiceMeter;
@@ -219,11 +198,10 @@ private:
     juce::TextButton upperSelect { "UPPER" }, lowerSelect { "LOWER" };
     juce::TextButton initLayer { "INIT" }, copyUpToLow { "COPY U>L" }, copyLowToUp { "COPY L>U" };
     juce::TextButton loadPatch { "LOAD PATCH" }, savePatch { "SAVE PATCH" }, comparePatch { "COMPARE" };
-    juce::TextButton modMatrixButton { "MOD MATRIX" }, waveBrowserButton { "WAVE BANK" }, sequenceButton { "SEQUENCER" };
+    juce::TextButton modMatrixButton { "MOD MATRIX" }, waveBrowserButton { "WAVE BANK" };
     juce::ComboBox sizeBox;
     std::unique_ptr<ModMatrixPage> modMatrixPage;
     std::unique_ptr<WaveBrowserPage> waveBrowserPage;
-    std::unique_ptr<SequencePage> sequencePage;
     std::unique_ptr<SectionPanel> performancePanel, controllerPanel;
     std::unique_ptr<juce::FileChooser> chooser;
     juce::TooltipWindow tooltipWindow { this, 600 };

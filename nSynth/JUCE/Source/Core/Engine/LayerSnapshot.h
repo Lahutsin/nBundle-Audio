@@ -35,7 +35,6 @@ struct LayerSnapshot
     // VCA
     float vcaEnv { 1.0f }, vcaLfo1 { 0.0f }, vcaDds2 { 0.0f };
     VcaEnvMode vcaEnvMode { VcaEnvMode::env2 };
-    TriState vcaDynamics { TriState::off };
     // Envelopes
     float env1AttackHold { 0.0f }, env1Attack { 0.001f }, env1DecayHold { 0.0f }, env1Decay { 0.5f },
           env1Sustain { 0.5f }, env1Release { 0.3f };
@@ -46,6 +45,7 @@ struct LayerSnapshot
     Lfo1Wave lfo1Wave { Lfo1Wave::triangle };
     float lfo1Rate { 0.5f }, lfo1Delay { 0.0f }, lfo1LrPhase { 0.0f };
     Lfo1Mode lfo1Mode { Lfo1Mode::freeOrNorm };
+    bool lfo1Sync { false };
     // Performance control
     Lfo2Wave lfo2Wave { Lfo2Wave::sine };
     float lfo2Rate { 0.5f }, lfo2Delay { 0.0f };
@@ -54,23 +54,31 @@ struct LayerSnapshot
     OscTarget perfDest { OscTarget::both };
     float bendDds { 2.0f }, bendVcf { 0.0f }, portamento { 0.0f };
     int octave { 0 };
-    // Voice assign
+    // Voice assign / velocity
     VoiceMode voiceMode { VoiceMode::poly1 };
     bool unison { false };
     UnisonSize unisonSize { UnisonSize::all };
-    bool binaural { true };
-    // Arp / seq
-    bool arpOn { false };
-    ArpMode arpMode { ArpMode::up };
-    int arpRange { 1 };
-    ClockDiv clockDiv { ClockDiv::sixteenth };
-    bool clockSync { false };
-    int swing { 0 }, seqSlot { 1 };
+    BinauralMode binaural { BinauralMode::x2 };
+    float binauralDetune { 7.0f };   // cents
     bool hold { false };
-    // FX
+    VelocityMode velMode { VelocityMode::dynamic };
+    int velFixed { 100 };
+    float velCurve { 0.0f }, velSens { 0.5f };
+    // Chorus
     ChorusMode chorus { ChorusMode::off };
-    float delayTime { 0.5f }, delayFeedback { 0.3f }, delaySend { 0.0f };
+    float chorusRate { 0.5f }, chorusDepth { 0.5f }, chorusDelayMs { 3.5f }, chorusFeedback { 0.0f },
+          chorusWidth { 1.0f }, chorusMix { 0.5f };
+    // Delay
+    bool delaySync { true };
+    float delayMs { 350.0f };
+    DelayDivision delayDivision { DelayDivision::d1_4 };
+    float delayFeedback { 0.35f }, delayMix { 0.0f };
+    bool delayPingPong { false };
+    float delayLowCutHz { 120.0f }, delayHighCutHz { 9000.0f };
     bool delayFreeze { false };
+    // Reverb
+    float reverbMix { 0.0f }, reverbSize { 0.6f }, reverbDecay { 2.5f }, reverbPreDelayMs { 15.0f },
+          reverbDampingHz { 9000.0f }, reverbLowCutHz { 150.0f }, reverbWidth { 1.0f }, reverbModulation { 0.3f };
 };
 
 struct PerformanceSnapshot
@@ -84,7 +92,6 @@ struct PerformanceSnapshot
     float tempoParam { 120.0f };
     float masterDb { 0.0f };
     float ribbon { 0.0f }, modLever { 0.0f }, expression { 0.0f };
-    Quality quality { Quality::x4 };
     MidiRouting midiRouting { MidiRouting::keyboardMode };
     bool dualPedal { false };
     bool hardwareCCMap { false };
@@ -102,7 +109,7 @@ private:
     {
         return values[index]->load (std::memory_order_relaxed);
     }
-    std::array<std::atomic<float>*, 81> values {};
+    std::array<std::atomic<float>*, 98> values {};
 };
 
 class PerformanceParamReader
@@ -116,6 +123,6 @@ private:
     {
         return values[index]->load (std::memory_order_relaxed);
     }
-    std::array<std::atomic<float>*, 16> values {};
+    std::array<std::atomic<float>*, 15> values {};
 };
 } // namespace nsynth

@@ -13,7 +13,7 @@ namespace nsynth
 enum class Section
 {
     dds1, dds2, mixer, ddsMod, vcf, vca, env1, env2, lfo1, perfControl,
-    voiceAssign, arpSeq, fx, performance
+    voiceAssign, fx, delay, reverb, performance
 };
 
 enum class Kind { floatParam, choiceParam, intParam, boolParam };
@@ -92,7 +92,8 @@ namespace pid
     inline constexpr const char* vcaLfo1 = "vca_lfo1";
     inline constexpr const char* vcaDds2 = "vca_dds2";
     inline constexpr const char* vcaEnvMode = "vca_env_mode";
-    inline constexpr const char* vcaDynamics = "vca_dynamics";
+    // Kept as "vca_dynamics": patches saved with the former Off / 1/2 / On switch keep their depth.
+    inline constexpr const char* velSens = "vca_dynamics";
     inline constexpr const char* env1AttackHold = "env1_ahold";
     inline constexpr const char* env1Attack = "env1_attack";
     inline constexpr const char* env1DecayHold = "env1_dhold";
@@ -111,6 +112,7 @@ namespace pid
     inline constexpr const char* lfo1Delay = "lfo1_delay";
     inline constexpr const char* lfo1LrPhase = "lfo1_lr_phase";
     inline constexpr const char* lfo1Mode = "lfo1_mode";
+    inline constexpr const char* lfo1Sync = "clk_sync";
     inline constexpr const char* lfo2Wave = "lfo2_wave";
     inline constexpr const char* lfo2Rate = "lfo2_rate";
     inline constexpr const char* lfo2Delay = "lfo2_delay";
@@ -128,19 +130,35 @@ namespace pid
     inline constexpr const char* unison = "unison";
     inline constexpr const char* unisonSize = "unison_size";
     inline constexpr const char* binaural = "binaural";
-    inline constexpr const char* arpOn = "arp_on";
-    inline constexpr const char* arpMode = "arp_mode";
-    inline constexpr const char* arpRange = "arp_range";
-    inline constexpr const char* clockDiv = "clk_div";
-    inline constexpr const char* clockSync = "clk_sync";
-    inline constexpr const char* swing = "swing";
-    inline constexpr const char* seqSlot = "seq_slot";
+    inline constexpr const char* binauralDetune = "binaural_detune";
     inline constexpr const char* hold = "hold";
+    inline constexpr const char* velMode = "vel_mode";
+    inline constexpr const char* velFixed = "vel_fixed";
+    inline constexpr const char* velCurve = "vel_curve";
     inline constexpr const char* chorus = "chorus";
-    inline constexpr const char* delayTime = "delay_time";
+    inline constexpr const char* chorusRate = "chorus_rate";
+    inline constexpr const char* chorusDepth = "chorus_depth";
+    inline constexpr const char* chorusDelay = "chorus_delay";
+    inline constexpr const char* chorusFeedback = "chorus_fb";
+    inline constexpr const char* chorusWidth = "chorus_width";
+    inline constexpr const char* chorusMix = "chorus_mix";
+    inline constexpr const char* delaySync = "delay_sync";
+    inline constexpr const char* delayMs = "delay_ms";
+    inline constexpr const char* delayDivision = "delay_div";
     inline constexpr const char* delayFeedback = "delay_fb";
-    inline constexpr const char* delaySend = "delay_send";
+    inline constexpr const char* delayMix = "delay_mix";
+    inline constexpr const char* delayPingPong = "delay_pingpong";
+    inline constexpr const char* delayLowCut = "delay_lowcut";
+    inline constexpr const char* delayHighCut = "delay_highcut";
     inline constexpr const char* delayFreeze = "delay_freeze";
+    inline constexpr const char* reverbMix = "reverb_mix";
+    inline constexpr const char* reverbSize = "reverb_size";
+    inline constexpr const char* reverbDecay = "reverb_decay";
+    inline constexpr const char* reverbPreDelay = "reverb_predelay";
+    inline constexpr const char* reverbDamping = "reverb_damp";
+    inline constexpr const char* reverbLowCut = "reverb_lowcut";
+    inline constexpr const char* reverbWidth = "reverb_width";
+    inline constexpr const char* reverbModulation = "reverb_mod";
 
     // performance
     inline constexpr const char* kbdMode = "kbd_mode";
@@ -155,7 +173,6 @@ namespace pid
     inline constexpr const char* ribbon = "ribbon";
     inline constexpr const char* modLever = "mod_lever";
     inline constexpr const char* expression = "expression";
-    inline constexpr const char* quality = "quality";
     inline constexpr const char* midiRouting = "midi_routing";
     inline constexpr const char* dualPedal = "dual_pedal";
     inline constexpr const char* hardwareCCMap = "hardware_cc_map";

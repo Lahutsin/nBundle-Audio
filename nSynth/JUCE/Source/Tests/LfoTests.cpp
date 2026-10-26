@@ -1,5 +1,6 @@
 #include "TestHelpers.h"
 #include "Core/DSP/Lfo.h"
+#include "Core/Params/Enums.h"
 
 using namespace nsynth;
 using namespace nsynth::test;
@@ -96,11 +97,14 @@ public:
             expectEquals (lfo[7], 1.0);
             expectWithinAbsoluteError (lfo.back(), 1.0 / 6.0, 1e-12);
             for (size_t i = 1; i < lfo.size(); ++i) expectLessThan (lfo[i], lfo[i - 1]);
-            const auto& d = rates::delaySyncBeats();
-            expectWithinAbsoluteError (d.front(), 1.0 / 12.0, 1e-12);
-            expectWithinAbsoluteError (d.back(), 8.0 / 3.0, 1e-12);
-            for (size_t i = 1; i < d.size(); ++i) expectGreaterThan (d[i], d[i - 1]);
-            expectEquals (rates::clockDivBeats (4), 0.25);
+            const int divisions = toInt (DelayDivision::d1_1) + 1;
+            expectEquals (rates::delayDivisionBeats (toInt (DelayDivision::d1_64)), 1.0 / 16.0);
+            expectEquals (rates::delayDivisionBeats (toInt (DelayDivision::d1_4)), 1.0);
+            expectEquals (rates::delayDivisionBeats (toInt (DelayDivision::d1_8D)), 0.75);
+            expectWithinAbsoluteError (rates::delayDivisionBeats (toInt (DelayDivision::d1_8T)), 1.0 / 3.0, 1e-12);
+            expectEquals (rates::delayDivisionBeats (toInt (DelayDivision::d1_1)), 4.0);
+            for (int i = 1; i < divisions; ++i)
+                expectGreaterThan (rates::delayDivisionBeats (i), rates::delayDivisionBeats (i - 1));
             expectEquals (rates::divisionIndex (0.0f, 16), 0);
             expectEquals (rates::divisionIndex (1.0f, 16), 15);
         }

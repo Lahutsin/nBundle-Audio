@@ -51,20 +51,15 @@ SynthEngine::SynthEngine (juce::AudioProcessorValueTreeState& state)
 
 void SynthEngine::prepare (double sampleRate, int maxBlockSize, int requestedRenderWorkers)
 {
-    hostSampleRate = sampleRate;
     renderPool.prepare (requestedRenderWorkers);
     perfReader.read (perf);
-    currentQuality = perf.quality;
 
-    const double osRate = sampleRate * (1 << (toInt (currentQuality) + 1));
+    const double osRate = sampleRate * SynthLayer::kOversamplingFactor;
     for (int i = 0; i < kNumVoices; ++i)
         voices[(size_t) i].prepare (osRate, waveBank.get(), (uint32_t) (1000 + 7919 * i));
 
     for (auto* l : { &upper, &lower })
-    {
         l->prepare (sampleRate, maxBlockSize, renderPool);
-        l->setQuality (currentQuality);
-    }
 
     assignVoices (perf.keyboardMode, perf.singleLayer);
     upperBuffer.setSize (2, maxBlockSize);
@@ -79,7 +74,7 @@ void SynthEngine::assignVoices (KeyboardMode mode, Layer singleLayer)
 
     if (mode == KeyboardMode::single)
     {
-        // SINGLE: one layer gets the whole pool of 20 voices.
+        // SINGLE: one layer gets the whole pool of voices.
         auto& active = layer (singleLayer);
         auto& inactive = layer (singleLayer == Layer::upper ? Layer::lower : Layer::upper);
         inactive.assignVoices (voices.data(), 0);
@@ -144,13 +139,6 @@ void SynthEngine::process (juce::AudioBuffer<float>& mix, juce::AudioBuffer<floa
         for (int channel = 1; channel <= 16; ++channel)
             updateChannelExpression (channel);
 
-    if (perf.quality != currentQuality)
-    {
-        currentQuality = perf.quality;
-        upper.setQuality (currentQuality);
-        lower.setQuality (currentQuality);
-    }
-
     if (perf.keyboardMode != currentMode || (perf.keyboardMode == KeyboardMode::single && perf.singleLayer != currentSingleLayer))
         assignVoices (perf.keyboardMode, perf.singleLayer);
 
@@ -167,256 +155,15 @@ void SynthEngine::process (juce::AudioBuffer<float>& mix, juce::AudioBuffer<floa
     upper.beginBlock (n, ctx, &ageCounter);
     lower.beginBlock (n, lowerCtx, &ageCounter);
 
-    for (auto layerId : { Layer::upper, Layer::lower })
-    {
-        const auto index = (size_t) toInt (layerId);
-        auto& synthLayer = layer (layerId);
-        const auto& layerParams = synthLayer.snapshot();
-        const bool shouldPlay = layerParams.arpOn && layerParams.arpMode == ArpMode::seq;
-        const bool shouldArp = layerParams.arpOn && layerParams.arpMode != ArpMode::seq;
-        auto& arp = arpStates[index];
-        if (! shouldArp)
-        {
-            if (arp.active && arp.playingNote >= 0)
-                synthLayer.noteOff (arp.playingNote, arp.playingChannel);
-            arp.active = false;
-            arp.physicalNotes.clear();
-            arp.latchedNotes.clear();
-            arp.gateSamples = -1;
-            arp.playingNote = -1;
-        }
-        else if (! arp.active)
-        {
-            arp.active = true;
-            arp.stepCounter = 0;
-            arp.cursor = 0;
-            arp.direction = 1;
-            arp.samplesToNext = 0.0;
-            arp.gateSamples = -1;
-            arp.playingNote = -1;
-        }
-        else if (! layerParams.hold && arp.physicalNotes.empty() && ! arp.latchedNotes.empty())
-        {
-            arp.latchedNotes.clear();
-            if (arp.playingNote >= 0)
-            {
-                synthLayer.noteOff (arp.playingNote, arp.playingChannel);
-                arp.playingNote = -1;
-            }
-            arp.gateSamples = -1;
-        }
-
-        const int slot = juce::jlimit (0, SequenceBankData::kNumSlots - 1, layerParams.seqSlot - 1);
-        if (! shouldPlay)
-        {
-            if (sequencePlaying[index])
-                synthLayer.releaseSequenceNotes();
-            sequencePlaying[index] = false;
-            sequenceGateSamples[index] = -1;
-            continue;
-        }
-        if (! sequencePlaying[index] || sequenceSlotIndex[index] != slot)
-        {
-            synthLayer.releaseSequenceNotes();
-            sequencePlaying[index] = true;
-            sequenceSlotIndex[index] = slot;
-            sequenceStepIndex[index] = 0;
-            sequenceSamplesToNext[index] = 0.0;
-            sequenceGateSamples[index] = -1;
-        }
-        blockSequences[index] = sequenceBank (layerId).snapshot();
-    }
-
-    auto swingStepPeriod = [&] (double basePeriod, int swingLevel, int stepCounter) -> double
-    {
-        static constexpr double ratios[] = { 1.0, 1.12, 1.24, 1.36, 1.50 };
-        const double r = ratios[juce::jlimit (0, 4, swingLevel)];
-        return (stepCounter & 1) == 0 ? basePeriod * r : basePeriod * (2.0 - r);
-    };
-
     int pos = 0;
-    auto renderUntil = [&] (int end)
-    {
-        while (pos < end)
-        {
-            bool handledEvent = false;
-            for (auto layerId : { Layer::upper, Layer::lower })
-            {
-                const auto index = (size_t) toInt (layerId);
-                auto& synthLayer = layer (layerId);
-                const auto& params = synthLayer.snapshot();
-
-                if (arpStates[index].active)
-                {
-                    auto& arp = arpStates[index];
-                    const auto& pool = ! arp.physicalNotes.empty() ? arp.physicalNotes : arp.latchedNotes;
-                    if (! pool.empty())
-                    {
-                        if (arp.samplesToNext <= 0.0)
-                        {
-                            if (arp.playingNote >= 0)
-                            {
-                                synthLayer.noteOff (arp.playingNote, arp.playingChannel);
-                                arp.playingNote = -1;
-                            }
-
-                            std::vector<ArpHeldNote> sorted = pool;
-                            std::sort (sorted.begin(), sorted.end(), [] (const ArpHeldNote& a, const ArpHeldNote& b)
-                            {
-                                return a.note < b.note;
-                            });
-
-                            const int octaves = juce::jlimit (1, 4, params.arpRange);
-                            std::vector<ArpHeldNote> expanded;
-                            expanded.reserve (sorted.size() * (size_t) octaves);
-                            for (int oct = 0; oct < octaves; ++oct)
-                                for (const auto& item : sorted)
-                                    expanded.push_back ({ juce::jlimit (0, 127, item.note + oct * 12), item.velocity, item.channel });
-
-                            const int total = (int) expanded.size();
-                            int pickIndex = 0;
-                            switch (params.arpMode)
-                            {
-                                case ArpMode::up:
-                                    pickIndex = arp.cursor % total;
-                                    arp.cursor = (arp.cursor + 1) % total;
-                                    break;
-                                case ArpMode::down:
-                                    pickIndex = total - 1 - (arp.cursor % total);
-                                    arp.cursor = (arp.cursor + 1) % total;
-                                    break;
-                                case ArpMode::upDown:
-                                    if (total <= 1)
-                                    {
-                                        pickIndex = 0;
-                                        arp.cursor = 0;
-                                    }
-                                    else
-                                    {
-                                        arp.cursor = juce::jlimit (0, total - 1, arp.cursor);
-                                        pickIndex = arp.cursor;
-                                        if (arp.cursor + arp.direction >= total)
-                                            arp.direction = -1;
-                                        else if (arp.cursor + arp.direction < 0)
-                                            arp.direction = 1;
-                                        arp.cursor += arp.direction;
-                                    }
-                                    break;
-                                case ArpMode::random:
-                                    pickIndex = arp.rng.nextInt (total);
-                                    break;
-                                case ArpMode::seq:
-                                    break;
-                            }
-
-                            const auto chosen = expanded[(size_t) pickIndex];
-                            synthLayer.noteOn (chosen.note, chosen.velocity, chosen.channel);
-                            arp.playingNote = chosen.note;
-                            arp.playingChannel = chosen.channel;
-
-                            const double beats = rates::clockDivBeats (toInt (params.clockDiv));
-                            const double basePeriod = juce::jmax (1.0, beats * 60.0 / ctx.bpm * hostSampleRate);
-                            const double period = swingStepPeriod (basePeriod, params.swing, arp.stepCounter);
-                            arp.samplesToNext = period;
-                            arp.gateSamples = juce::jmax (1, (int) std::lround (period * 0.8));
-                            ++arp.stepCounter;
-                            handledEvent = true;
-                        }
-                        else if (arp.gateSamples == 0)
-                        {
-                            if (arp.playingNote >= 0)
-                            {
-                                synthLayer.noteOff (arp.playingNote, arp.playingChannel);
-                                arp.playingNote = -1;
-                            }
-                            arp.gateSamples = -1;
-                            handledEvent = true;
-                        }
-                    }
-                }
-
-                if (! sequencePlaying[index])
-                    continue;
-                const auto& bank = blockSequences[index];
-                const auto& sequence = bank->slots[(size_t) sequenceSlotIndex[index]];
-                if (sequenceStepIndex[index] >= sequence.length)
-                    sequenceStepIndex[index] = 0;
-
-                if (sequenceSamplesToNext[index] <= 0.0)
-                {
-                    const auto& step = sequence.steps[(size_t) sequenceStepIndex[index]];
-                    synthLayer.playSequenceStep (step, sequenceTranspose[index], step.accent);
-                    const double beats = rates::clockDivBeats (toInt (params.clockDiv));
-                    const double basePeriod = juce::jmax (1.0, beats * 60.0 / ctx.bpm * hostSampleRate);
-                    const double period = swingStepPeriod (basePeriod, params.swing, sequenceStepIndex[index]);
-                    sequenceSamplesToNext[index] = period;
-                    sequenceGateSamples[index] = step.rest ? -1 : juce::jmax (
-                        1, (int) std::lround (period * (double) step.gatePercent / 100.0));
-                    sequenceStepIndex[index] = (sequenceStepIndex[index] + 1) % sequence.length;
-                    handledEvent = true;
-                }
-                else if (sequenceGateSamples[index] == 0)
-                {
-                    synthLayer.releaseSequenceNotes();
-                    sequenceGateSamples[index] = -1;
-                    handledEvent = true;
-                }
-            }
-            if (handledEvent)
-                continue;
-
-            int segmentEnd = end;
-            for (size_t index = 0; index < sequencePlaying.size(); ++index)
-            {
-                if (arpStates[index].active)
-                {
-                    const auto& arp = arpStates[index];
-                    if (! arp.physicalNotes.empty() || ! arp.latchedNotes.empty())
-                    {
-                        const int untilStep = juce::jmax (1, (int) std::ceil (arp.samplesToNext));
-                        segmentEnd = juce::jmin (segmentEnd, pos + untilStep);
-                        if (arp.gateSamples > 0)
-                            segmentEnd = juce::jmin (segmentEnd, pos + arp.gateSamples);
-                    }
-                }
-                if (! sequencePlaying[index])
-                    continue;
-                const int untilStep = juce::jmax (1, (int) std::ceil (sequenceSamplesToNext[index]));
-                segmentEnd = juce::jmin (segmentEnd, pos + untilStep);
-                if (sequenceGateSamples[index] > 0)
-                    segmentEnd = juce::jmin (segmentEnd, pos + sequenceGateSamples[index]);
-            }
-            const int count = segmentEnd - pos;
-            renderSegmentsCombined (pos, count);
-            for (size_t index = 0; index < sequencePlaying.size(); ++index)
-            {
-                if (arpStates[index].active)
-                {
-                    auto& arp = arpStates[index];
-                    if (! arp.physicalNotes.empty() || ! arp.latchedNotes.empty())
-                    {
-                        arp.samplesToNext -= count;
-                        if (arp.gateSamples > 0)
-                            arp.gateSamples -= count;
-                    }
-                }
-                if (! sequencePlaying[index])
-                    continue;
-                sequenceSamplesToNext[index] -= count;
-                if (sequenceGateSamples[index] > 0)
-                    sequenceGateSamples[index] -= count;
-            }
-            pos = segmentEnd;
-        }
-    };
-
     for (const auto meta : midi)
     {
         const int t = juce::jlimit (0, n, meta.samplePosition);
-        renderUntil (t);
+        renderSegmentsCombined (pos, t - pos);
+        pos = t;
         handleMidi (meta.getMessage());
     }
-    renderUntil (n);
+    renderSegmentsCombined (pos, n - pos);
 
     upper.finishBlock (upperBuffer, n);
     lower.finishBlock (lowerBuffer, n);
@@ -546,48 +293,6 @@ void SynthEngine::renderSegmentsCombined (int hostStart, int hostNum) noexcept
             juce::FloatVectorOperations::add (destR, layerPtr->parallelScratch.getReadPointer (lane * 2 + 1) + start, count);
         }
     }
-}
-
-void SynthEngine::appendSequenceState (juce::ValueTree& state) const
-{
-    for (auto layer : { Layer::upper, Layer::lower })
-        appendSequenceState (state, layer);
-}
-
-void SynthEngine::appendSequenceState (juce::ValueTree& state, Layer layer) const
-{
-    const int layerIndex = toInt (layer);
-    for (int i = state.getNumChildren() - 1; i >= 0; --i)
-        if (state.getChild (i).hasType ("SEQUENCER")
-            && (int) state.getChild (i).getProperty ("layer", -1) == layerIndex)
-            state.removeChild (i, nullptr);
-    state.addChild (sequenceBank (layer).toValueTree (layerIndex), -1, nullptr);
-}
-
-bool SynthEngine::restoreSequenceState (const juce::ValueTree& state, juce::String* error)
-{
-    std::array<SequenceBank, 2> staged;
-    std::array<bool, 2> found {};
-    for (int i = 0; i < state.getNumChildren(); ++i)
-    {
-        const auto child = state.getChild (i);
-        if (! child.hasType ("SEQUENCER"))
-            continue;
-        const int layer = (int) child.getProperty ("layer", -1);
-        if (! juce::isPositiveAndBelow (layer, 2) || found[(size_t) layer]
-            || ! staged[(size_t) layer].restoreFromValueTree (child, layer, error))
-        {
-            if (error && error->isEmpty())
-                *error = "State contains an invalid or duplicate sequence bank.";
-            return false;
-        }
-        found[(size_t) layer] = true;
-    }
-
-    for (auto layer : { Layer::upper, Layer::lower })
-        if (found[(size_t) toInt (layer)])
-            sequenceBank (layer).restoreSnapshot (*staged[(size_t) toInt (layer)].snapshot());
-    return true;
 }
 
 void SynthEngine::appendWaveBankState (juce::ValueTree& state) const
@@ -868,7 +573,6 @@ void SynthEngine::queueParameterValue (int binding, int value, int maximum) noex
         static constexpr int choice4[] = { 0, 32, 64, 96 };
         static constexpr int choice5[] = { 0, 26, 51, 77, 102 };
         static constexpr int choice6[] = { 0, 21, 43, 64, 85, 107 };
-        static constexpr int clock8[] = { 0, 16, 32, 48, 64, 70, 96, 102 };
         const int* values = nullptr;
         switch (count)
         {
@@ -877,7 +581,6 @@ void SynthEngine::queueParameterValue (int binding, int value, int maximum) noex
             case 4: values = choice4; break;
             case 5: values = choice5; break;
             case 6: values = choice6; break;
-            case 8: values = clock8; break;
             default: plain = (float) juce::roundToInt ((float) sevenBit / 127.0f * (float) (count - 1)); break;
         }
         if (values != nullptr)
@@ -1078,131 +781,36 @@ void SynthEngine::routeNote (const juce::MidiMessage& m, bool on)
     const int note = m.getNoteNumber();
     const float velocity = m.getFloatVelocity();
 
-    auto send = [&] (SynthLayer& l, Layer layerId)
+    auto send = [&] (SynthLayer& l)
     {
-        const auto layerIndex = (size_t) toInt (layerId);
-        const auto& layerSnapshot = l.snapshot();
-        if (layerSnapshot.arpOn && layerSnapshot.arpMode != ArpMode::seq)
-        {
-            auto& arp = arpStates[layerIndex];
-            if (on)
-            {
-                sequenceBanks[layerIndex].recordMidiNote (note);
-                const bool wasEmpty = arp.physicalNotes.empty() && arp.latchedNotes.empty();
-                if (arp.physicalNotes.empty() && layerSnapshot.hold)
-                    arp.latchedNotes.clear();
-
-                arp.physicalNotes.erase (
-                    std::remove_if (arp.physicalNotes.begin(), arp.physicalNotes.end(),
-                                    [&] (const ArpHeldNote& n) { return n.note == note && n.channel == m.getChannel(); }),
-                    arp.physicalNotes.end());
-                arp.physicalNotes.push_back ({ note, velocity, m.getChannel() });
-                if (layerSnapshot.hold)
-                {
-                    arp.latchedNotes.erase (
-                        std::remove_if (arp.latchedNotes.begin(), arp.latchedNotes.end(),
-                                        [&] (const ArpHeldNote& n) { return n.note == note && n.channel == m.getChannel(); }),
-                        arp.latchedNotes.end());
-                    arp.latchedNotes.push_back ({ note, velocity, m.getChannel() });
-                }
-                if (wasEmpty)
-                {
-                    arp.cursor = 0;
-                    arp.direction = 1;
-                    arp.stepCounter = 0;
-                    arp.samplesToNext = 0.0;
-                }
-                updateChannelExpression (m.getChannel());
-            }
-            else
-            {
-                arp.physicalNotes.erase (
-                    std::remove_if (arp.physicalNotes.begin(), arp.physicalNotes.end(),
-                                    [&] (const ArpHeldNote& n) { return n.note == note && n.channel == m.getChannel(); }),
-                    arp.physicalNotes.end());
-                if (! layerSnapshot.hold && arp.physicalNotes.empty())
-                {
-                    arp.latchedNotes.clear();
-                    if (arp.playingNote >= 0)
-                    {
-                        l.noteOff (arp.playingNote, arp.playingChannel);
-                        arp.playingNote = -1;
-                    }
-                    arp.gateSamples = -1;
-                }
-            }
-            return;
-        }
-
         if (on)
         {
-            sequenceBanks[layerIndex].recordMidiNote (note);
-            if (layerSnapshot.arpOn && layerSnapshot.arpMode == ArpMode::seq)
-            {
-                sequenceTranspose[layerIndex] = note - 60;
-                sequenceTransposeNote[layerIndex] = note;
-            }
             l.noteOn (note, velocity, m.getChannel());
             updateChannelExpression (m.getChannel());
         }
         else
-        {
             l.noteOff (note, m.getChannel());
-            if (! layerSnapshot.hold && sequenceTransposeNote[layerIndex] == note)
-            {
-                sequenceTranspose[layerIndex] = 0;
-                sequenceTransposeNote[layerIndex] = -1;
-            }
-        }
     };
 
     // Optional per-layer channel routing: base channel = upper, +1 = lower.
     if (perf.midiRouting == MidiRouting::channelPerLayer && ! isMpeMemberChannel (m.getChannel())
         && (m.getChannel() == 1 || m.getChannel() == 2))
     {
-        const auto layerId = m.getChannel() == 1 ? Layer::upper : Layer::lower;
-        send (layer (layerId), layerId);
+        send (layer (m.getChannel() == 1 ? Layer::upper : Layer::lower));
         return;
     }
 
     switch (currentMode)
     {
-        case KeyboardMode::single: send (layer (currentSingleLayer), currentSingleLayer); break;
-        case KeyboardMode::dual:   send (upper, Layer::upper); send (lower, Layer::lower); break;
+        case KeyboardMode::single: send (layer (currentSingleLayer)); break;
+        case KeyboardMode::dual:   send (upper); send (lower); break;
         case KeyboardMode::split:
             if (on)
-            {
-                const auto layerId = note >= perf.splitPoint ? Layer::upper : Layer::lower;
-                send (layer (layerId), layerId); // split point = first upper note
-            }
+                send (note >= perf.splitPoint ? upper : lower); // split point = first upper note
             else
             {
                 upper.noteOff (note, m.getChannel()); // the split point may have moved since note-on
                 lower.noteOff (note, m.getChannel());
-                for (auto layerId : { Layer::upper, Layer::lower })
-                {
-                    const auto layerIndex = (size_t) toInt (layerId);
-                    auto& arp = arpStates[layerIndex];
-                    arp.physicalNotes.erase (
-                        std::remove_if (arp.physicalNotes.begin(), arp.physicalNotes.end(),
-                                        [&] (const ArpHeldNote& n) { return n.note == note && n.channel == m.getChannel(); }),
-                        arp.physicalNotes.end());
-                    if (! layer (layerId).snapshot().hold && arp.physicalNotes.empty())
-                    {
-                        arp.latchedNotes.clear();
-                        if (arp.playingNote >= 0)
-                        {
-                            layer (layerId).noteOff (arp.playingNote, arp.playingChannel);
-                            arp.playingNote = -1;
-                        }
-                        arp.gateSamples = -1;
-                    }
-                    if (! layer (layerId).snapshot().hold && sequenceTransposeNote[layerIndex] == note)
-                    {
-                        sequenceTranspose[layerIndex] = 0;
-                        sequenceTransposeNote[layerIndex] = -1;
-                    }
-                }
             }
             break;
     }
@@ -1294,12 +902,10 @@ void SynthEngine::handleMidi (const juce::MidiMessage& m)
             case 120:
                 upper.allNotesOff (true);
                 lower.allNotesOff (true);
-                for (auto& arp : arpStates) { arp.physicalNotes.clear(); arp.latchedNotes.clear(); arp.playingNote = -1; arp.gateSamples = -1; }
                 break;
             case 123:
                 upper.allNotesOff (false);
                 lower.allNotesOff (false);
-                for (auto& arp : arpStates) { arp.physicalNotes.clear(); arp.latchedNotes.clear(); arp.playingNote = -1; arp.gateSamples = -1; }
                 break;
             default: break;
         }
@@ -1345,13 +951,6 @@ void SynthEngine::handleMidi (const juce::MidiMessage& m)
     {
         upper.allNotesOff (false);
         lower.allNotesOff (false);
-        for (auto& arp : arpStates)
-        {
-            arp.physicalNotes.clear();
-            arp.latchedNotes.clear();
-            arp.playingNote = -1;
-            arp.gateSamples = -1;
-        }
     }
 }
 } // namespace nsynth

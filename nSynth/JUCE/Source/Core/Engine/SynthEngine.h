@@ -1,18 +1,17 @@
 #pragma once
 
 #include "SynthLayer.h"
-#include "SequenceBank.h"
 #include <atomic>
 #include <mutex>
 
 namespace nsynth
 {
-// Whole instrument: 20 voices shared by the UPPER and LOWER layers,
+// Whole instrument: 40 voices shared by the UPPER and LOWER layers,
 // keyboard modes, MIDI routing and the output mix.
 class SynthEngine
 {
 public:
-    static constexpr int kNumVoices = 20;
+    static constexpr int kNumVoices = SynthLayer::kMaxVoices;
     enum class WaveImportState { idle, building, ready, failed };
 
     explicit SynthEngine (juce::AudioProcessorValueTreeState& state);
@@ -32,9 +31,6 @@ public:
     const ModMatrix& modMatrix (Layer l) const noexcept { return layer (l).getModMatrix(); }
     void appendModMatrixState (juce::ValueTree& state) const;
     bool restoreModMatrixState (const juce::ValueTree& state, juce::String* error = nullptr);
-    void appendSequenceState (juce::ValueTree& state) const;
-    void appendSequenceState (juce::ValueTree& state, Layer layer) const;
-    bool restoreSequenceState (const juce::ValueTree& state, juce::String* error = nullptr);
     void appendWaveBankState (juce::ValueTree& state) const;
     bool restoreWaveBankState (const juce::ValueTree& state, juce::String* error = nullptr);
     void appendMidiInputState (juce::ValueTree& state) const;
@@ -51,8 +47,6 @@ public:
     bool hasPendingMidiParameterChanges() const noexcept;
     uint32_t getDroppedMidiParameterChanges() const noexcept { return droppedMidiParameterChanges.load(); }
     const WaveBank& getWaveBank() const noexcept { return *std::atomic_load (&waveBank); }
-    SequenceBank& sequenceBank (Layer layer) noexcept { return sequenceBanks[(size_t) toInt (layer)]; }
-    const SequenceBank& sequenceBank (Layer layer) const noexcept { return sequenceBanks[(size_t) toInt (layer)]; }
     bool requestWaveImport (int slot, const juce::File& file, juce::String* error = nullptr);
     WaveImportState getWaveImportState() const noexcept { return waveImportState.load(); }
     juce::String getWaveImportError() const;
@@ -94,13 +88,11 @@ private:
     std::shared_ptr<const WaveBank> retiredWaveBank;
     std::array<Voice, kNumVoices> voices;
     SynthLayer upper, lower;
-    std::array<SequenceBank, 2> sequenceBanks;
     VoiceRenderPool renderPool;
     uint64_t ageCounter { 0 };
 
     KeyboardMode currentMode { KeyboardMode::single };
     Layer currentSingleLayer { Layer::upper };
-    Quality currentQuality { Quality::x4 };
     bool prepared { false };
 
     // live controller state from MIDI
@@ -111,33 +103,6 @@ private:
     std::array<std::atomic<float>, 16> bendSensitivity {}, channelFineTune {}, channelCoarseTune {};
     std::atomic<int> lowerMpeMembers { 0 }, upperMpeMembers { 0 };
     std::atomic<bool> midiStateRefresh { false };
-    struct ArpHeldNote
-    {
-        int note { 60 };
-        float velocity { 1.0f };
-        int channel { 1 };
-    };
-    struct ArpRuntimeState
-    {
-        std::vector<ArpHeldNote> physicalNotes;
-        std::vector<ArpHeldNote> latchedNotes;
-        bool active { false };
-        int stepCounter { 0 };
-        int cursor { 0 };
-        int direction { 1 };
-        double samplesToNext { 0.0 };
-        int gateSamples { -1 };
-        int playingNote { -1 };
-        int playingChannel { 1 };
-        juce::Random rng;
-    };
-    std::array<ArpRuntimeState, 2> arpStates {};
-    std::array<int, 2> sequenceTranspose {}, sequenceTransposeNote { -1, -1 };
-    std::array<bool, 2> sequencePlaying {};
-    std::array<int, 2> sequenceStepIndex {}, sequenceSlotIndex {}, sequenceGateSamples { -1, -1 };
-    std::array<double, 2> sequenceSamplesToNext {};
-    std::array<std::shared_ptr<const SequenceBankData>, 2> blockSequences;
-    double hostSampleRate { 44100.0 };
 
     juce::AudioBuffer<float> upperBuffer, lowerBuffer;
     std::vector<ParameterBinding> parameterBindings;

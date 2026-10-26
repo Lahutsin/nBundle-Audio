@@ -22,7 +22,7 @@ enum class DirectModTarget : int
     vcaEnvLevel, vcaLfo1Amount, vcaDds2Amount, env1Attack, env1Sustain,
     env1Release, env2Attack, env2Decay, env2Sustain, env2Release,
     lfo1Delay, lfo1LrPhase, lfo2Rate, lfo2Delay, ddsModLfo1Amount,
-    pwDetune, portamento, delaySend, delayFeedback, count
+    pwDetune, portamento, delayMix, delayFeedback, count
 };
 
 struct ModMatrixData
