@@ -64,6 +64,7 @@ void SynthEngine::prepare (double sampleRate, int maxBlockSize, int requestedRen
     assignVoices (perf.keyboardMode, perf.singleLayer);
     upperBuffer.setSize (2, maxBlockSize);
     lowerBuffer.setSize (2, maxBlockSize);
+    limiter.prepare (sampleRate);
     prepared = true;
 }
 
@@ -175,6 +176,8 @@ void SynthEngine::process (juce::AudioBuffer<float>& mix, juce::AudioBuffer<floa
         mix.addFrom (ch, 0, upperBuffer, ch, 0, n, master);
         mix.addFrom (ch, 0, lowerBuffer, ch, 0, n, master);
     }
+    if (mix.getNumChannels() >= 2)
+        limiter.process (mix.getWritePointer (0), mix.getWritePointer (1), n);
     for (int ch = 2; ch < mix.getNumChannels(); ++ch)
         mix.clear (ch, 0, n);
 
@@ -300,7 +303,7 @@ void SynthEngine::appendWaveBankState (juce::ValueTree& state) const
     for (int i = state.getNumChildren() - 1; i >= 0; --i)
         if (state.getChild (i).hasType ("USER_WAVES"))
             state.removeChild (i, nullptr);
-    state.addChild (std::atomic_load (&waveBank)->toValueTree(), -1, nullptr);
+    state.addChild (latestWaveBank()->toValueTree(), -1, nullptr);
 }
 
 bool SynthEngine::restoreWaveBankState (const juce::ValueTree& state, juce::String* error)
@@ -323,40 +326,22 @@ bool SynthEngine::restoreWaveBankState (const juce::ValueTree& state, juce::Stri
         return true;
     if (! WaveBank::isValidValueTree (bankState, error))
         return false;
-    const auto currentCycles = std::atomic_load (&waveBank)->toValueTree().getProperty ("cycles");
+    // Compare with the newest bank (one may be waiting for the audio thread to pick it up).
+    const auto reference = latestWaveBank();
+    const auto currentCycles = reference->toValueTree().getProperty ("cycles");
     const auto requestedCycles = bankState.getProperty ("cycles");
     const auto* currentData = currentCycles.getBinaryData();
     const auto* requestedData = requestedCycles.getBinaryData();
     if (currentData != nullptr && requestedData != nullptr && *currentData == *requestedData)
         return true;
 
-    auto importState = waveImportState.load();
-    while (importState != WaveImportState::building)
-        if (waveImportState.compare_exchange_weak (importState, WaveImportState::building))
-            break;
-    if (importState == WaveImportState::building)
-    {
-        if (error) *error = "A wavetable import is already in progress.";
+    // Rebuilt right here (a few tens of ms on the calling thread) and handed to the audio thread,
+    // which swaps it in at the start of its next block. Loading presets in quick succession
+    // (browser arrow keys) therefore never fails with "import in progress".
+    auto rebuilt = std::make_shared<WaveBank> (*reference);
+    if (! rebuilt->restoreFromValueTree (bankState, error))
         return false;
-    }
-    std::atomic_store (&retiredWaveBank, std::shared_ptr<const WaveBank> {});
-
-    const auto base = std::atomic_load (&waveBank);
-    waveImportPool.addJob (new WaveImportJob ([this, base, bankState]
-    {
-        auto rebuilt = std::make_shared<WaveBank> (*base);
-        juce::String failure;
-        if (! rebuilt->restoreFromValueTree (bankState, &failure))
-        {
-            {
-                const std::lock_guard<std::mutex> lock (waveImportMutex);
-                waveImportError = failure;
-            }
-            waveImportState.store (WaveImportState::failed);
-            return;
-        }
-        std::atomic_store (&pendingWaveBank, std::shared_ptr<const WaveBank> (std::move (rebuilt)));
-    }), true);
+    std::atomic_store (&pendingWaveBank, std::shared_ptr<const WaveBank> (std::move (rebuilt)));
     return true;
 }
 

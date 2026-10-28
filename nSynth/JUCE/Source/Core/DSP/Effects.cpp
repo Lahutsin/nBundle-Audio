@@ -423,6 +423,28 @@ void StereoReverb::process (juce::AudioBuffer<float>& buffer, int start, int num
 }
 
 //==============================================================================
+void OutputLimiter::prepare (double sampleRate)
+{
+    releaseCoef = (float) (1.0 - std::exp (-1.0 / (kReleaseSeconds * sampleRate)));
+    reset();
+}
+
+void OutputLimiter::process (float* left, float* right, int num) noexcept
+{
+    for (int i = 0; i < num; ++i)
+    {
+        if (! std::isfinite (left[i]) || ! std::isfinite (right[i]))
+            left[i] = right[i] = 0.0f;
+        const float level = juce::jmax (std::abs (left[i]), std::abs (right[i]));
+        gain += (1.0f - gain) * releaseCoef;
+        if (level * gain > kCeiling)
+            gain = kCeiling / level;
+        left[i] *= gain;
+        right[i] *= gain;
+    }
+}
+
+//==============================================================================
 void AirShelf::prepare (double sampleRate)
 {
     // RBJ high shelf, slope S = 1.

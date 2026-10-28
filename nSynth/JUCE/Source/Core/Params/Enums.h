@@ -17,6 +17,8 @@ enum class OscTarget { dds1 = 0, both, dds2 };
 enum class SuperMode { off = 0, half, on };
 enum class PwmSource { manual = 0, lfo1, env1 };
 enum class Drive { off = 0, one, two };
+// Analog-modelled low-pass types (see VoiceFilter).
+enum class FilterType { moog24 = 0, moog12, jupiter24, sem12 };
 enum class EnvSource { env1 = 0, both, env2 };
 enum class TriState { off = 0, half, on };
 enum class VcaEnvMode { env2 = 0, fixed1, fixed2 };

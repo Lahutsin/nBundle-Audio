@@ -82,6 +82,7 @@ namespace pid
     inline constexpr const char* hpf = "hpf";
     inline constexpr const char* lpf = "lpf";
     inline constexpr const char* res = "res";
+    inline constexpr const char* vcfType = "vcf_type";
     inline constexpr const char* vcfDrive = "vcf_drive";
     inline constexpr const char* vcfEnv = "vcf_env";
     inline constexpr const char* vcfEnvSource = "vcf_env_src";
@@ -131,6 +132,7 @@ namespace pid
     inline constexpr const char* unisonSize = "unison_size";
     inline constexpr const char* binaural = "binaural";
     inline constexpr const char* binauralDetune = "binaural_detune";
+    inline constexpr const char* stereoWidth = "stereo_width";
     inline constexpr const char* hold = "hold";
     inline constexpr const char* velMode = "vel_mode";
     inline constexpr const char* velFixed = "vel_fixed";

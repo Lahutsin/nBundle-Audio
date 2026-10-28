@@ -13,6 +13,12 @@ bool sameUserWaveState (const juce::ValueTree& a, const juce::ValueTree& b)
     const auto* bData = bCycles.getBinaryData();
     return aData != nullptr && bData != nullptr && *aData == *bData;
 }
+
+juce::File userRootDirectory()
+{
+    return juce::File::getSpecialLocation (juce::File::userDocumentsDirectory)
+               .getChildFile ("nBundleAudio").getChildFile ("nSynth");
+}
 } // namespace
 
 juce::AudioProcessor::BusesProperties NSynthAudioProcessor::makeBuses()
@@ -27,7 +33,8 @@ juce::AudioProcessor::BusesProperties NSynthAudioProcessor::makeBuses()
 NSynthAudioProcessor::NSynthAudioProcessor()
     : AudioProcessor (makeBuses()),
       apvts (*this, nullptr, "NSYNTH", createParameterLayout()),
-      engine (apvts)
+      engine (apvts),
+      presetLibrary (userRootDirectory())
 {
     for (auto layer : { Layer::upper, Layer::lower })
     {
@@ -36,15 +43,11 @@ NSynthAudioProcessor::NSynthAudioProcessor()
         patchWaveBaseline[(size_t) toInt (layer)] = engine.getWaveBank().toValueTree();
     }
 
-    auto root = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory)
-                    .getChildFile ("nBundleAudio").getChildFile ("nSynth");
-    patchDirectory = root.getChildFile ("Patches");
+    // Factory presets are compiled into the binary (PresetLibrary); only user presets live on disk.
+    patchDirectory = presetLibrary.getUserDirectory (nSynth::PresetKind::patch);
     patchDirectory.createDirectory();
-    const auto factoryRoot = juce::File::getSpecialLocation (juce::File::currentApplicationFile)
-                                 .getSiblingFile ("Presets");
-    factoryPatchDirectory = factoryRoot.getChildFile ("Patches");
-    presetManager = std::make_unique<nSynth::PresetManager> (
-        factoryRoot.getChildFile ("Performances"), root.getChildFile ("Performances"), ".nsynthperf");
+    const auto performanceDirectory = presetLibrary.getUserDirectory (nSynth::PresetKind::performance);
+    presetManager = std::make_unique<nSynth::PresetManager> (performanceDirectory, performanceDirectory, ".nsynthperf");
 }
 
 NSynthAudioProcessor::~NSynthAudioProcessor()
@@ -135,6 +138,7 @@ void NSynthAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
     engine.appendMidiInputState (state);
     state.setProperty ("editorScale", editorScale.load(), nullptr);
     state.setProperty ("presetName", currentPresetName, nullptr);
+    state.setProperty ("presetKey", performanceKey, nullptr);
     state.setProperty ("stateVersion", 6, nullptr);
     if (auto xml = state.createXml())
         copyXmlToBinary (*xml, destData);
@@ -169,8 +173,11 @@ void NSynthAudioProcessor::setStateInformation (const void* data, int sizeInByte
         if (! patchWaveBaseline[index].isValid())
             patchWaveBaseline[index] = engine.getWaveBank().toValueTree();
         patchNames[index] = "Session";
+        patchCategories[index] = {};
+        patchKeys[index] = {};
         patchCompareActive[index] = false;
     }
+    performanceKey = tree.getProperty ("presetKey", {}).toString();
 }
 
 void NSynthAudioProcessor::initLayer (Layer layer)
@@ -179,6 +186,8 @@ void NSynthAudioProcessor::initLayer (Layer layer)
         if (auto* p = apvts.getParameter (layerParamId (layer, spec.suffix)))
             p->setValueNotifyingHost (p->getDefaultValue());
     patchNames[(size_t) toInt (layer)] = "Init";
+    patchCategories[(size_t) toInt (layer)] = {};
+    patchKeys[(size_t) toInt (layer)] = {};
     engine.modMatrix (layer).clearAll();
     patchBaseline[(size_t) toInt (layer)] = captureLayerValues (layer);
     patchMatrixBaseline[(size_t) toInt (layer)] = *engine.modMatrix (layer).snapshot();
@@ -196,7 +205,9 @@ void NSynthAudioProcessor::copyLayer (Layer from, Layer to)
             dst->setValueNotifyingHost (src->getValue());
     }
     engine.modMatrix (to).restoreSnapshot (*engine.modMatrix (from).snapshot());
-    patchNames[(size_t) toInt (to)] = "Copied";
+    patchNames[(size_t) toInt (to)] = patchNames[(size_t) toInt (from)];
+    patchCategories[(size_t) toInt (to)] = patchCategories[(size_t) toInt (from)];
+    patchKeys[(size_t) toInt (to)] = patchKeys[(size_t) toInt (from)];
     patchCompareActive[(size_t) toInt (to)] = false;
 }
 
@@ -245,9 +256,40 @@ bool NSynthAudioProcessor::loadPatch (Layer layer, const juce::File& file, juce:
     juce::ValueTree tree;
     if (! presetManager->loadFromFile (tree, file, error))
         return false;
-    if (! tree.hasType ("NSYNTH_PATCH") || (int) tree.getProperty ("layer", -1) != toInt (layer))
+    const auto name = tree.getProperty ("name", nSynth::PresetLibrary::displayNameFromFileName (file.getFileNameWithoutExtension())).toString();
+    if (! loadPatchState (layer, tree, name, error))
+        return false;
+    nSynth::PresetEntry entry;
+    entry.kind = nSynth::PresetKind::patch;
+    entry.factory = false;
+    entry.file = file;
+    patchKeys[(size_t) toInt (layer)] = entry.key();
+    return true;
+}
+
+bool NSynthAudioProcessor::loadPatch (Layer layer, const nSynth::PresetEntry& entry, juce::String* error)
+{
+    if (entry.kind != nSynth::PresetKind::patch)
     {
-        if (error) *error = "Patch file type or target layer does not match.";
+        if (error) *error = "\"" + entry.name + "\" is not a layer patch.";
+        return false;
+    }
+    const auto xml = entry.readXml (error);
+    if (xml == nullptr)
+        return false;
+    if (! loadPatchState (layer, juce::ValueTree::fromXml (*xml), entry.name, error))
+        return false;
+    patchCategories[(size_t) toInt (layer)] = entry.category;
+    patchKeys[(size_t) toInt (layer)] = entry.key();
+    return true;
+}
+
+bool NSynthAudioProcessor::loadPatchState (Layer layer, const juce::ValueTree& tree, const juce::String& name,
+                                           juce::String* error)
+{
+    if (! tree.hasType ("NSYNTH_PATCH"))
+    {
+        if (error) *error = "Not an nSynth layer patch.";
         return false;
     }
 
@@ -257,13 +299,15 @@ bool NSynthAudioProcessor::loadPatch (Layer layer, const juce::File& file, juce:
     juce::ValueTree stagedWaveBank;
     std::vector<float> values (getLayerParamSpecs().size(), 0.0f);
     std::vector<bool> found (values.size(), false);
+    // All parameters of a patch belong to the layer it was saved from ("up_" or "lo_");
+    // they are mapped onto the target layer by suffix.
+    juce::String sourcePrefix;
     for (int childIndex = 0; childIndex < tree.getNumChildren(); ++childIndex)
     {
         const auto child = tree.getChild (childIndex);
         if (child.hasType ("MOD_MATRIX"))
         {
-            if (hasMatrix || (int) child.getProperty ("layer", -1) != toInt (layer)
-                || ! stagedMatrix.restoreFromValueTree (child, error))
+            if (hasMatrix || ! stagedMatrix.restoreFromValueTree (child, error))
             {
                 if (error && error->isEmpty())
                     *error = "Patch contains an invalid or duplicate modulation matrix.";
@@ -282,11 +326,23 @@ bool NSynthAudioProcessor::loadPatch (Layer layer, const juce::File& file, juce:
         }
         if (! child.hasType ("PARAM"))
             continue;
+
         const auto id = child.getProperty ("id").toString();
-        bool matched = false;
+        juce::String prefix;
+        for (auto candidate : { Layer::upper, Layer::lower })
+            if (id.startsWith (layerPrefix (candidate)))
+                prefix = layerPrefix (candidate);
+        if (prefix.isEmpty() || (sourcePrefix.isNotEmpty() && prefix != sourcePrefix))
+        {
+            if (error) *error = "Patch mixes parameters of both layers or contains an unknown parameter.";
+            return false;
+        }
+        sourcePrefix = prefix;
+
+        const auto suffix = id.substring (prefix.length());
         for (size_t i = 0; i < getLayerParamSpecs().size(); ++i)
         {
-            if (id != layerParamId (layer, getLayerParamSpecs()[i].suffix))
+            if (suffix != getLayerParamSpecs()[i].suffix)
                 continue;
             const float value = (float) child.getProperty ("value", -1.0f);
             if (found[i] || ! std::isfinite (value) || value < 0.0f || value > 1.0f)
@@ -296,15 +352,9 @@ bool NSynthAudioProcessor::loadPatch (Layer layer, const juce::File& file, juce:
             }
             values[i] = value;
             found[i] = true;
-            matched = true;
             break;
         }
-        // Parameters of this layer that no longer exist (arp/sequencer, old FX) are skipped.
-        if (! matched && ! id.startsWith (layerPrefix (layer)))
-        {
-            if (error) *error = "Patch contains a parameter for the wrong layer or an unknown parameter.";
-            return false;
-        }
+        // Parameters that no longer exist (arp/sequencer, old FX) are skipped.
     }
 
     // Parameters added after the patch was saved start from their defaults.
@@ -326,16 +376,23 @@ bool NSynthAudioProcessor::loadPatch (Layer layer, const juce::File& file, juce:
     patchBaseline[index] = std::move (values);
     patchMatrixBaseline[index] = *engine.modMatrix (layer).snapshot();
     patchWaveBaseline[index] = stagedWaveBank;
-    patchNames[index] = file.getFileNameWithoutExtension();
+    patchNames[index] = name;
+    patchCategories[index] = tree.getProperty ("category", {}).toString();
+    patchKeys[index] = {};
     patchCompareActive[index] = false;
     return true;
 }
 
 bool NSynthAudioProcessor::savePatch (Layer layer, const juce::File& file, juce::String* error)
 {
+    const auto target = file.withFileExtension ("nsynthpatch");
+    const auto name = nSynth::PresetLibrary::displayNameFromFileName (target.getFileNameWithoutExtension());
     juce::ValueTree tree ("NSYNTH_PATCH");
     tree.setProperty ("layer", toInt (layer), nullptr);
     tree.setProperty ("stateVersion", 4, nullptr);
+    tree.setProperty ("name", name, nullptr);
+    if (patchCategories[(size_t) toInt (layer)].isNotEmpty())
+        tree.setProperty ("category", patchCategories[(size_t) toInt (layer)], nullptr);
     tree.addChild (engine.modMatrix (layer).toValueTree (toInt (layer)), -1, nullptr);
     engine.appendWaveBankState (tree);
     for (const auto& spec : getLayerParamSpecs())
@@ -351,15 +408,21 @@ bool NSynthAudioProcessor::savePatch (Layer layer, const juce::File& file, juce:
         child.setProperty ("value", parameter->getValue(), nullptr);
         tree.addChild (child, -1, nullptr);
     }
-    if (! presetManager->saveToFile (tree, file.withFileExtension ("nsynthpatch"), error))
+    if (! presetManager->saveToFile (tree, target, error))
         return false;
 
     const auto index = (size_t) toInt (layer);
     patchBaseline[index] = captureLayerValues (layer);
     patchMatrixBaseline[index] = *engine.modMatrix (layer).snapshot();
     patchWaveBaseline[index] = engine.getWaveBank().toValueTree();
-    patchNames[index] = file.getFileNameWithoutExtension();
+    patchNames[index] = name;
+    nSynth::PresetEntry entry;
+    entry.kind = nSynth::PresetKind::patch;
+    entry.factory = false;
+    entry.file = target;
+    patchKeys[index] = entry.key();
     patchCompareActive[index] = false;
+    presetLibrary.rescan();
     return true;
 }
 
@@ -432,7 +495,35 @@ bool NSynthAudioProcessor::loadPerformance (const juce::File& file, juce::String
     juce::ValueTree tree (apvts.state.getType());
     if (! presetManager->loadFromFile (tree, file, error))
         return false;
+    const auto name = tree.getProperty ("name", nSynth::PresetLibrary::displayNameFromFileName (file.getFileNameWithoutExtension())).toString();
+    if (! loadPerformanceState (tree, name, error))
+        return false;
+    nSynth::PresetEntry entry;
+    entry.kind = nSynth::PresetKind::performance;
+    entry.factory = false;
+    entry.file = file;
+    performanceKey = entry.key();
+    return true;
+}
 
+bool NSynthAudioProcessor::loadPerformance (const nSynth::PresetEntry& entry, juce::String* error)
+{
+    if (entry.kind != nSynth::PresetKind::performance)
+    {
+        if (error) *error = "\"" + entry.name + "\" is not a performance.";
+        return false;
+    }
+    const auto xml = entry.readXml (error);
+    if (xml == nullptr)
+        return false;
+    if (! loadPerformanceState (juce::ValueTree::fromXml (*xml), entry.name, error))
+        return false;
+    performanceKey = entry.key();
+    return true;
+}
+
+bool NSynthAudioProcessor::loadPerformanceState (juce::ValueTree tree, const juce::String& name, juce::String* error)
+{
     if (! tree.hasType (apvts.state.getType()))
     {
         if (error) *error = "Not an nSynth performance file.";
@@ -446,11 +537,15 @@ bool NSynthAudioProcessor::loadPerformance (const juce::File& file, juce::String
     if (! engine.restoreWaveBankState (tree, error))
         return false;
     removeLegacyChildren (tree);
+    // Display metadata of the file is not plugin state.
+    for (auto property : { "name", "category", "presetKey" })
+        tree.removeProperty (property, nullptr);
     const float masterVolume = apvts.getParameter (perfParamId (pid::masterVolume))->getValue();
     apvts.replaceState (tree);
     if (auto* masterParameter = apvts.getParameter (perfParamId (pid::masterVolume)))
         masterParameter->setValueNotifyingHost (masterVolume);
-    currentPresetName = file.getFileNameWithoutExtension();
+    currentPresetName = name;
+    performanceKey = {};
     for (auto layer : { Layer::upper, Layer::lower })
     {
         const auto index = (size_t) toInt (layer);
@@ -459,7 +554,9 @@ bool NSynthAudioProcessor::loadPerformance (const juce::File& file, juce::String
         patchWaveBaseline[index] = getWaveBankState (tree);
         if (! patchWaveBaseline[index].isValid())
             patchWaveBaseline[index] = engine.getWaveBank().toValueTree();
-        patchNames[index] = "Performance";
+        patchNames[index] = tree.getProperty (layer == Layer::upper ? "upperPatch" : "lowerPatch", "Performance").toString();
+        patchCategories[index] = {};
+        patchKeys[index] = {};
         patchCompareActive[index] = false;
     }
     return true;
@@ -472,9 +569,19 @@ bool NSynthAudioProcessor::savePerformance (const juce::File& file, juce::String
     engine.appendWaveBankState (state);
     engine.appendMidiInputState (state);
     state.setProperty ("stateVersion", 6, nullptr);
+    const auto name = nSynth::PresetLibrary::displayNameFromFileName (file.getFileNameWithoutExtension());
+    state.setProperty ("name", name, nullptr);
+    state.setProperty ("upperPatch", patchNames[0], nullptr);
+    state.setProperty ("lowerPatch", patchNames[1], nullptr);
     if (! presetManager->saveToFile (state, file, error))
         return false;
-    currentPresetName = file.getFileNameWithoutExtension();
+    currentPresetName = name;
+    nSynth::PresetEntry entry;
+    entry.kind = nSynth::PresetKind::performance;
+    entry.factory = false;
+    entry.file = file;
+    performanceKey = entry.key();
+    presetLibrary.rescan();
     return true;
 }
 

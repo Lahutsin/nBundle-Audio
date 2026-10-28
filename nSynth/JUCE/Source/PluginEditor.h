@@ -3,6 +3,8 @@
 #include <juce_gui_extra/juce_gui_extra.h>
 #include <functional>
 #include "PluginProcessor.h"
+#include "PresetBrowser.h"
+#include "UiPalette.h"
 
 class NSynthLookAndFeel : public juce::LookAndFeel_V4
 {
@@ -11,7 +13,7 @@ public:
     void drawRotarySlider (juce::Graphics&, int x, int y, int w, int h, float pos, float start, float end, juce::Slider&) override;
     void drawLinearSlider (juce::Graphics&, int x, int y, int w, int h, float pos, float minPos, float maxPos,
                            juce::Slider::SliderStyle, juce::Slider&) override;
-    juce::Font getComboBoxFont (juce::ComboBox&) override { return juce::Font (juce::FontOptions (9.5f)); }
+    juce::Font getComboBoxFont (juce::ComboBox&) override { return juce::Font (juce::FontOptions (11.5f)); }
     void drawButtonText (juce::Graphics&, juce::TextButton&, bool shouldDrawButtonAsHighlighted, bool shouldDrawButtonAsDown) override;
     juce::Label* createSliderTextBox (juce::Slider& s) override;
 
@@ -136,6 +138,25 @@ private:
     std::unique_ptr<juce::FileChooser> chooser;
 };
 
+// Header preset display: shows what is loaded (performance or the selected layer's patch) and
+// opens the preset browser when clicked.
+class PresetDisplay : public juce::Component,
+                      public juce::SettableTooltipClient
+{
+public:
+    void setContent (const juce::String& tag, const juce::String& name, const juce::String& detail, juce::Colour accent);
+    void paint (juce::Graphics&) override;
+    void mouseDown (const juce::MouseEvent&) override { if (onClick) onClick(); }
+    void mouseEnter (const juce::MouseEvent&) override { repaint(); }
+    void mouseExit (const juce::MouseEvent&) override { repaint(); }
+    std::function<void()> onClick;
+    juce::String getPresetName() const { return name; }
+
+private:
+    juce::String tag, name, detail;
+    juce::Colour accent;
+};
+
 class NSynthAudioProcessorEditor : public juce::AudioProcessorEditor,
                                    private juce::Timer
 {
@@ -156,15 +177,18 @@ public:
     void showModMatrixPage (bool shouldShow) { modMatrixPage->setVisible (shouldShow); }
     WaveBrowserPage& getWaveBrowserPage() noexcept { return *waveBrowserPage; }
     void showWaveBrowserPage (bool shouldShow) { waveBrowserPage->setVisible (shouldShow); }
+    PresetBrowser& getPresetBrowser() noexcept { return *presetBrowser; }
+    PresetDisplay& getPresetDisplay() noexcept { return presetDisplay; }
+    void openPresetBrowser (nSynth::PresetKind kind);
     // Cells shared by two controls (delay ms / division, static velocity / curve).
     void updateSwitchedControls();
 
 private:
+    // The selected layer fills the editor; its sections are laid out in three rows following the
+    // signal flow: sources -> filter -> amp, modulators, voicing -> effects.
     struct LayerUi
     {
-        std::vector<std::unique_ptr<SectionPanel>> rowSections;   // DDS1 .. DDS MOD (always visible)
-        std::vector<std::unique_ptr<SectionPanel>> sharedSections; // perf control, voice, delay, reverb, chorus (bottom row)
-        juce::Label rowLabel;
+        std::array<std::vector<std::unique_ptr<SectionPanel>>, 3> rows;
     };
 
     struct SwitchedCell
@@ -180,8 +204,7 @@ private:
     void selectBottomLayer (nsynth::Layer layer);
     void configureMidiLearn (ParamControl& control);
     void layoutContent();
-    void stepPreset (int delta);
-    std::vector<juce::File> allPresets() const;
+    void savePresetAs (nSynth::PresetKind kind);
 
     NSynthAudioProcessor& synth;
     NSynthLookAndFeel lnf;
@@ -193,8 +216,9 @@ private:
     std::vector<SwitchedCell> switchedCells;
     nsynth::Layer bottomLayer { nsynth::Layer::upper };
 
-    juce::Label title, presetName, voiceMeter;
-    juce::TextButton prevPreset { "<" }, nextPreset { ">" }, loadPreset { "LOAD" }, savePreset { "SAVE" };
+    juce::Label title, voiceMeter, layerHint;
+    PresetDisplay presetDisplay;
+    juce::TextButton prevPreset { "<" }, nextPreset { ">" }, savePreset { "SAVE" };
     juce::TextButton upperSelect { "UPPER" }, lowerSelect { "LOWER" };
     juce::TextButton initLayer { "INIT" }, copyUpToLow { "COPY U>L" }, copyLowToUp { "COPY L>U" };
     juce::TextButton loadPatch { "LOAD PATCH" }, savePatch { "SAVE PATCH" }, comparePatch { "COMPARE" };
@@ -202,7 +226,8 @@ private:
     juce::ComboBox sizeBox;
     std::unique_ptr<ModMatrixPage> modMatrixPage;
     std::unique_ptr<WaveBrowserPage> waveBrowserPage;
-    std::unique_ptr<SectionPanel> performancePanel, controllerPanel;
+    std::unique_ptr<PresetBrowser> presetBrowser;
+    std::unique_ptr<SectionPanel> performancePanel;
     std::unique_ptr<juce::FileChooser> chooser;
     juce::TooltipWindow tooltipWindow { this, 600 };
 

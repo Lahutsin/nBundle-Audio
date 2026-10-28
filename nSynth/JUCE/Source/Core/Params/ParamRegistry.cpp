@@ -1,4 +1,5 @@
 #include "ParamRegistry.h"
+#include "../DSP/Wavetables.h"
 
 namespace nsynth
 {
@@ -52,10 +53,12 @@ std::vector<ParamSpec> buildLayerSpecs()
     return {
         // ---------------------------------------------------------------- DDS 1
         C (pid::dds1Wave, "DDS1 Waveform", S::dds1, { "Sine", "Sawtooth", "Square", "Triangle", "Noise", "Alt" }, 1, 29, "",
-           "Init patch = single sawtooth oscillator."),
+           "Saw: Minimoog-style ramp, Square: Prophet-style with droop, Triangle: rounded Moog-style; SUPER = JP-8000 super saw."),
         C (pid::dds1Range, "DDS1 Range", S::dds1, { "64'", "32'", "16'", "8'", "4'", "2'" }, 3, 30, "p.33", "8' = concert pitch."),
-        I (pid::dds1AltA, "DDS1 Alt Wave A", S::dds1, 1, 32, 1, "", -1, "p.33-34", "Alt waveform on channel A (1-16 group 1, 17-32 group 2)."),
-        I (pid::dds1AltB, "DDS1 Alt Wave B", S::dds1, 1, 32, 2, "", -1, "p.33-34", "Alt waveform on channel B; PWM/WAVE morphs A->B."),
+        C (pid::dds1AltA, "DDS1 Alt Wave A", S::dds1, WaveBank::altWaveNames(), 0, -1, "p.33-34",
+           "Alt waveform A: TX = 4-op FM, CZ = phase distortion, DW = DW-8000 style, PPG = wavetable style."),
+        C (pid::dds1AltB, "DDS1 Alt Wave B", S::dds1, WaveBank::altWaveNames(), 1, -1, "p.33-34",
+           "Alt waveform B; PWM/WAVE morphs A->B."),
 
         // ---------------------------------------------------------------- DDS 2
         C (pid::dds2Wave, "DDS2 Waveform", S::dds2, { "Sine", "Sawtooth", "Square", "Triangle", "Noise", "Pulse" }, 1, 31, "p.36"),
@@ -82,8 +85,10 @@ std::vector<ParamSpec> buildLayerSpecs()
 
         // ---------------------------------------------------------------- VCF
         F (pid::hpf, "HPF Cutoff", S::vcf, 10.0f, 4000.0f, 10.0f, Exp, 0, "Hz", 95, "p.42", "1-pole 6 dB/oct."),
-        F (pid::lpf, "LPF Cutoff", S::vcf, 15.0f, 25000.0f, 25000.0f, Exp, 0, "Hz", 74, "p.42", "4-pole 24 dB/oct ladder."),
+        F (pid::lpf, "LPF Cutoff", S::vcf, 15.0f, 25000.0f, 25000.0f, Exp, 0, "Hz", 74, "p.42", "Low-pass cutoff (see VCF Type)."),
         F (pid::res, "Resonance", S::vcf, 0.0f, 1.0f, 0.0f, Lin, 0, "", 71, "p.42", "Self-oscillates near max."),
+        C (pid::vcfType, "VCF Type", S::vcf, { "Moog 24", "Moog 12", "Jupiter 24", "SEM 12" }, 0, -1, "-",
+           "Moog 24/12: transistor ladder; Jupiter 24: OTA cascade; SEM 12: state-variable filter."),
         C (pid::vcfDrive, "VCF Drive", S::vcf, { "Off", "1", "2" }, 0, 41, "p.42"),
         F (pid::vcfEnv, "VCF Env Amount", S::vcf, 0.0f, 1.0f, 0.0f, Lin, 0, "", 45, "p.42", "Max +8 octaves."),
         C (pid::vcfEnvSource, "VCF Env Source", S::vcf, { "ENV 1", "1 + 2", "ENV 2" }, 0, 44, "p.42"),
@@ -92,7 +97,8 @@ std::vector<ParamSpec> buildLayerSpecs()
         C (pid::vcfKeytrack, "VCF Keytrack", S::vcf, tri3, 0, 43, "p.43"),
 
         // ---------------------------------------------------------------- VCA
-        F (pid::vcaEnv, "VCA Env Level", S::vca, 0.0f, 1.0f, 1.0f, Lin, 0, "", 7, "p.45"),
+        F (pid::vcaEnv, "VCA Env Level", S::vca, 0.0f, 1.0f, 0.75f, Lin, 0, "", 7, "p.45",
+           "Layer level; factory patches are matched in loudness with it."),
         F (pid::vcaLfo1, "VCA LFO1 Amount", S::vca, 0.0f, 1.0f, 0.0f, Lin, 0, "", 92, "p.45"),
         F (pid::vcaDds2, "VCA DDS2 Amount", S::vca, 0.0f, 1.0f, 0.0f, Lin, 0, "", 109, "p.45"),
         C (pid::vcaEnvMode, "VCA Env Mode", S::vca, { "ENV 2", "Fixed 1 (Gate)", "Fixed 2 (Gate+Rel)" }, 0, 49, "p.45"),
@@ -145,10 +151,12 @@ std::vector<ParamSpec> buildLayerSpecs()
         C (pid::binaural, "Binaural", S::voiceAssign, { "Off", "x1", "x2" }, 2, 80, "p.91",
            "x1: one voice per ear; x2: a detuned pair per ear (4 voices per note) for a wider, denser sound."),
         F (pid::binauralDetune, "Binaural Detune", S::voiceAssign, 0.0f, 25.0f, 7.0f, Lin, 0, "ct", -1, "-",
-           "x2: mirrored detune between the two voices of each ear."),
+           "x2: mirrored detune between the two voices of each ear. UNISON: stacked voices spread over +/- 1.5 x this."),
+        F (pid::stereoWidth, "Stereo Width", S::voiceAssign, 0.0f, 1.0f, 0.65f, Lin, 0, "", -1, "-",
+           "Binaural: how far apart the left and right voices sit (1 = hard left/right, 0 = mono). UNISON: stereo fan-out of the stack."),
         B (pid::hold, "Hold", S::voiceAssign, false, 87, "p.81"),
-        C (pid::velMode, "Velocity Mode", S::voiceAssign, { "Dynamic", "Static" }, 0, -1, "-",
-           "Dynamic: played velocity through VEL CURVE. Static: every note uses STATIC VEL."),
+        C (pid::velMode, "Velocity Mode", S::voiceAssign, { "Dynamic", "Static" }, 1, -1, "-",
+           "Static (default): every note uses STATIC VEL. Dynamic: played velocity through VEL CURVE."),
         I (pid::velFixed, "Static Velocity", S::voiceAssign, 1, 127, 100, "", -1, "-", "Velocity of every note in Static mode."),
         F (pid::velCurve, "Velocity Curve", S::voiceAssign, -1.0f, 1.0f, 0.0f, Lin, 0, "", -1, "-",
            "Dynamic mode: < 0 soft (light touch is louder), 0 linear, > 0 hard."),

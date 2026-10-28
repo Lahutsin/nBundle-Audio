@@ -64,6 +64,20 @@ set(NSYNTH_CORE_SOURCES
   Source/Core/Engine/SynthEngine.cpp
   Source/PresetManager.h
   Source/PresetManager.cpp
+  Source/PresetLibrary.h
+  Source/PresetLibrary.cpp
+)
+
+# Factory patches and performances are compiled into the binary, so every plug-in format
+# finds them regardless of where the host or installer puts the bundle.
+file(GLOB_RECURSE NSYNTH_FACTORY_PRESETS CONFIGURE_DEPENDS
+  "${PROJECT_SOURCE_DIR}/../Presets/*.nsynthpatch"
+  "${PROJECT_SOURCE_DIR}/../Presets/*.nsynthperf"
+)
+juce_add_binary_data(nSynthPresetData
+  HEADER_NAME NSynthPresetData.h
+  NAMESPACE NSynthPresetData
+  SOURCES ${NSYNTH_FACTORY_PRESETS}
 )
 
 set(NSYNTH_DEFINITIONS
@@ -99,52 +113,22 @@ target_sources(nSynth PRIVATE
   Source/PluginProcessor.cpp
   Source/PluginEditor.h
   Source/PluginEditor.cpp
+  Source/PresetBrowser.h
+  Source/PresetBrowser.cpp
+  Source/UiPalette.h
 )
 
 target_include_directories(nSynth PRIVATE Source)
 target_compile_definitions(nSynth PRIVATE ${NSYNTH_DEFINITIONS})
 target_link_libraries(nSynth
   PRIVATE
+    nSynthPresetData
     juce::juce_audio_utils
     juce::juce_dsp
   PUBLIC
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags
 )
-
-add_custom_target(nSynthFactoryContent ALL)
-add_dependencies(nSynthFactoryContent nSynth_VST3)
-if(APPLE)
-  add_dependencies(nSynthFactoryContent nSynth_AU)
-endif()
-
-function(nsynth_copy_factory_content target bundle_name executable_folder)
-  add_custom_command(TARGET nSynthFactoryContent POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-      "${PROJECT_SOURCE_DIR}/../Presets"
-      "$<TARGET_FILE_DIR:${target}>/Presets"
-    VERBATIM
-  )
-
-  get_target_property(copy_directory ${target} JUCE_PLUGIN_COPY_DIR)
-  if(copy_directory)
-    add_custom_command(TARGET nSynthFactoryContent POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${PROJECT_SOURCE_DIR}/../Presets"
-        "$<GENEX_EVAL:${copy_directory}>/${bundle_name}/${executable_folder}/Presets"
-      VERBATIM
-    )
-  endif()
-endfunction()
-
-if(APPLE)
-  nsynth_copy_factory_content(nSynth_AU "nSynth.component" "Contents/MacOS")
-  nsynth_copy_factory_content(nSynth_VST3 "nSynth.vst3" "Contents/MacOS")
-elseif(WIN32)
-  nsynth_copy_factory_content(nSynth_VST3 "nSynth.vst3" "Contents/${JUCE_TARGET_ARCHITECTURE}-win")
-else()
-  nsynth_copy_factory_content(nSynth_VST3 "nSynth.vst3" "Contents/${JUCE_TARGET_ARCHITECTURE}-linux")
-endif()
 
 function(nsynth_add_engine_tool target source_file)
   juce_add_console_app(${target} PRODUCT_NAME "${target}")
@@ -154,12 +138,16 @@ function(nsynth_add_engine_tool target source_file)
     Source/PluginProcessor.cpp
     Source/PluginEditor.h
     Source/PluginEditor.cpp
+    Source/PresetBrowser.h
+    Source/PresetBrowser.cpp
+    Source/UiPalette.h
     ${source_file}
   )
   target_include_directories(${target} PRIVATE Source)
   target_compile_definitions(${target} PRIVATE ${NSYNTH_DEFINITIONS})
   target_link_libraries(${target}
     PRIVATE
+      nSynthPresetData
       juce::juce_audio_utils
       juce::juce_dsp
       juce::juce_recommended_config_flags
@@ -170,6 +158,7 @@ endfunction()
 
 nsynth_add_engine_tool(nSynthFactoryGenerator Source/Tools/FactoryContentGenerator.cpp)
 nsynth_add_engine_tool(nSynthAnalysis Source/Analysis/AnalysisMain.cpp)
+nsynth_add_engine_tool(nSynthRender Source/Tools/RenderTool.cpp)
 
 if(NSYNTH_BUILD_TESTS)
   juce_add_console_app(nSynthTests PRODUCT_NAME "nSynthTests")
@@ -180,6 +169,9 @@ if(NSYNTH_BUILD_TESTS)
     Source/PluginProcessor.cpp
     Source/PluginEditor.h
     Source/PluginEditor.cpp
+    Source/PresetBrowser.h
+    Source/PresetBrowser.cpp
+    Source/UiPalette.h
     Source/Tests/TestHelpers.h
     Source/Tests/TestMain.cpp
     Source/Tests/ParamTests.cpp
@@ -204,6 +196,7 @@ if(NSYNTH_BUILD_TESTS)
   )
   target_link_libraries(nSynthTests
     PRIVATE
+      nSynthPresetData
       juce::juce_audio_utils
       juce::juce_dsp
       juce::juce_recommended_config_flags

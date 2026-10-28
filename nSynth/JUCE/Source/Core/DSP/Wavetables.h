@@ -67,10 +67,17 @@ public:
     static bool isValidValueTree (const juce::ValueTree& state, juce::String* error = nullptr);
     bool restoreFromValueTree (const juce::ValueTree& state, juce::String* error = nullptr);
 
-    // nSynth's built-in factory alternative waveforms.
+    // nSynth's built-in factory alternative waveforms, modelled on classic digital synths, and their names.
     static std::vector<float> makeFactoryAltCycle (int index);
+    static const juce::StringArray& altWaveNames();
 
-    static std::vector<std::complex<float>> classicHarmonics (int index);
+    // DDS1 classic cycles (0 sine, 1 saw, 2 square, 3 triangle) with analog-style shapes; DDS2 uses the same shapes.
+    static std::vector<float> makeClassicCycle (int index);
+    static constexpr double kRampCurve = 0.25;     // Minimoog-style saw: slightly convex capacitor ramp
+    static constexpr double kSquareDroop = 0.06;   // Prophet-style square: AC-coupled plateau droop
+    static double analogRamp (double p) noexcept { return (1.0 - std::exp (-kRampCurve * p)) / (1.0 - std::exp (-kRampCurve)); }
+    static double roundTriangle (double t) noexcept { return 1.5 * t - 0.5 * t * t * t; }
+
 
 private:
     std::array<MipWavetable, 4> classicTables;

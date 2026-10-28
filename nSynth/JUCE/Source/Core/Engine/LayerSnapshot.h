@@ -28,12 +28,13 @@ struct LayerSnapshot
     // VCF
     float hpfHz { 10.0f }, lpfHz { 25000.0f }, res { 0.0f };
     Drive drive { Drive::off };
+    FilterType vcfType { FilterType::moog24 };
     float vcfEnv { 0.0f };
     EnvSource vcfEnvSource { EnvSource::env1 };
     float vcfLfo1 { 0.0f }, vcfDds2 { 0.0f };
     TriState vcfKeytrack { TriState::off };
     // VCA
-    float vcaEnv { 1.0f }, vcaLfo1 { 0.0f }, vcaDds2 { 0.0f };
+    float vcaEnv { 0.75f }, vcaLfo1 { 0.0f }, vcaDds2 { 0.0f };
     VcaEnvMode vcaEnvMode { VcaEnvMode::env2 };
     // Envelopes
     float env1AttackHold { 0.0f }, env1Attack { 0.001f }, env1DecayHold { 0.0f }, env1Decay { 0.5f },
@@ -60,8 +61,9 @@ struct LayerSnapshot
     UnisonSize unisonSize { UnisonSize::all };
     BinauralMode binaural { BinauralMode::x2 };
     float binauralDetune { 7.0f };   // cents
+    float stereoWidth { 0.65f };     // binaural voice panning, 1 = hard left/right
     bool hold { false };
-    VelocityMode velMode { VelocityMode::dynamic };
+    VelocityMode velMode { VelocityMode::fixed };
     int velFixed { 100 };
     float velCurve { 0.0f }, velSens { 0.5f };
     // Chorus
@@ -109,7 +111,7 @@ private:
     {
         return values[index]->load (std::memory_order_relaxed);
     }
-    std::array<std::atomic<float>*, 98> values {};
+    std::array<std::atomic<float>*, 100> values {};
 };
 
 class PerformanceParamReader

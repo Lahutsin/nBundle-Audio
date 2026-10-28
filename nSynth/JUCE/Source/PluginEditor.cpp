@@ -2,16 +2,10 @@
 
 using namespace nsynth;
 
+using namespace nSynth::ui;
+
 namespace
 {
-const juce::Colour kBackground { 0xff17191e };
-const juce::Colour kPanel { 0xff22252c };
-const juce::Colour kOutline { 0xff363b48 };
-const juce::Colour kText { 0xffe6e7eb };
-const juce::Colour kTextDim { 0xff8b909c };
-const juce::Colour kUpperAccent { 0xff3fa9f5 };
-const juce::Colour kLowerAccent { 0xfff58a3f };
-const juce::Colour kPerfAccent { 0xff9ad46a };
 
 juce::Colour accentForLayer (Layer l) { return l == Layer::upper ? kUpperAccent : kLowerAccent; }
 
@@ -95,7 +89,7 @@ juce::Colour NSynthLookAndFeel::accentFor (const juce::Component& c)
 juce::Label* NSynthLookAndFeel::createSliderTextBox (juce::Slider& s)
 {
     auto* l = juce::LookAndFeel_V4::createSliderTextBox (s);
-    l->setFont (juce::Font (juce::FontOptions (9.5f)));
+    l->setFont (juce::Font (juce::FontOptions (11.0f)));
     l->setMinimumHorizontalScale (0.65f);
     l->setBorderSize (juce::BorderSize<int> (0, 1, 0, 1));
     return l;
@@ -181,7 +175,7 @@ ParamControl::ParamControl (juce::AudioProcessorValueTreeState& state, const juc
     caption.setJustificationType (juce::Justification::centred);
     caption.setColour (juce::Label::textColourId, kTextDim);
     caption.setMinimumHorizontalScale (0.55f);
-    caption.setFont (juce::Font (juce::FontOptions (9.5f)));
+    caption.setFont (juce::Font (juce::FontOptions (11.0f)));
     addAndMakeVisible (caption);
 
     jassert (state.getParameter (id) != nullptr);
@@ -233,7 +227,7 @@ ParamControl::ParamControl (juce::AudioProcessorValueTreeState& state, const juc
             const bool ribbonLike = juce::String (spec.suffix) == pid::ribbon;
             slider = std::make_unique<juce::Slider> (ribbonLike ? juce::Slider::LinearHorizontal : juce::Slider::RotaryHorizontalVerticalDrag,
                                                      juce::Slider::TextBoxBelow);
-            slider->setTextBoxStyle (juce::Slider::TextBoxBelow, false, 64, 12);
+            slider->setTextBoxStyle (juce::Slider::TextBoxBelow, false, 76, 14);
             slider->setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
             slider->setColour (juce::Slider::textBoxTextColourId, kText);
             slider->getProperties().set ("accent", (juce::int64) accent.getARGB());
@@ -290,7 +284,7 @@ void ParamControl::mouseDown (const juce::MouseEvent& event)
 void ParamControl::resized()
 {
     auto r = getLocalBounds();
-    caption.setBounds (r.removeFromTop (11));
+    caption.setBounds (r.removeFromTop (13));
     if (slider != nullptr)
         slider->setBounds (r);
     else if (! choiceButtons.empty())
@@ -299,10 +293,10 @@ void ParamControl::resized()
         for (int i = 0; i < (int) choiceButtons.size(); ++i)
             choiceButtons[(size_t) i]->setBounds (r.getX() + i * buttonWidth, r.getY() + 1,
                                                   i == (int) choiceButtons.size() - 1 ? r.getRight() - (r.getX() + i * buttonWidth) : buttonWidth,
-                                                  juce::jmin (20, r.getHeight() - 2));
+                                                  juce::jmin (22, r.getHeight() - 2));
     }
     else if (combo != nullptr)
-        combo->setBounds (r.withSizeKeepingCentre (r.getWidth() - 2, juce::jmin (20, r.getHeight())));
+        combo->setBounds (r.withSizeKeepingCentre (r.getWidth() - 4, juce::jmin (22, r.getHeight())));
     else if (toggle != nullptr)
         toggle->setBounds (r.withSizeKeepingCentre (20, juce::jmin (20, r.getHeight())));
 }
@@ -343,14 +337,14 @@ void SectionPanel::paint (juce::Graphics& g)
     g.setColour (accent);
     g.fillRect (r.removeFromTop (2.5f).reduced (5.0f, 0.0f));
     g.setColour (kText);
-    g.setFont (juce::Font (juce::FontOptions (10.5f)).boldened());
-    g.drawText (title.toUpperCase(), getLocalBounds().reduced (6, 2).removeFromTop (14), juce::Justification::centredLeft);
+    g.setFont (juce::Font (juce::FontOptions (12.0f)).boldened());
+    g.drawText (title.toUpperCase(), getLocalBounds().reduced (8, 3).removeFromTop (15), juce::Justification::centredLeft);
 }
 
 void SectionPanel::resized()
 {
-    auto area = getLocalBounds().reduced (3, 2);
-    area.removeFromTop (15);
+    auto area = getLocalBounds().reduced (4, 3);
+    area.removeFromTop (17);
     const int n = (int) cells.size();
     const int rows = juce::jmax (1, (n + columns - 1) / columns);
     const int cw = area.getWidth() / columns, rh = area.getHeight() / rows;
@@ -544,7 +538,7 @@ WaveBrowserPage::WaveBrowserPage (SynthEngine& e)
 {
     setOpaque (true);
     for (int i = 0; i < WaveBank::kNumAltWaves; ++i)
-        slotChoice.addItem ("ALT " + juce::String (i + 1), i + 1);
+        slotChoice.addItem (juce::String (i + 1) + ": " + WaveBank::altWaveNames()[i], i + 1);
     slotChoice.setSelectedId (1, juce::dontSendNotification);
     slotChoice.onChange = [this] { repaint(); };
     status.setText ("Import one periodic cycle into the selected slot.", juce::dontSendNotification);
@@ -660,6 +654,56 @@ void WaveBrowserPage::resized()
 }
 
 //==============================================================================
+void PresetDisplay::setContent (const juce::String& newTag, const juce::String& newName, const juce::String& newDetail,
+                                juce::Colour newAccent)
+{
+    if (newTag == tag && newName == name && newDetail == detail && newAccent == accent)
+        return;
+    tag = newTag;
+    name = newName;
+    detail = newDetail;
+    accent = newAccent;
+    repaint();
+}
+
+void PresetDisplay::paint (juce::Graphics& g)
+{
+    auto r = getLocalBounds().toFloat().reduced (0.5f);
+    g.setColour (kBackground.darker (isMouseOver() ? 0.1f : 0.3f));
+    g.fillRoundedRectangle (r, 4.0f);
+    g.setColour (isMouseOver() ? accent : kOutline);
+    g.drawRoundedRectangle (r, 4.0f, 1.0f);
+
+    auto area = getLocalBounds().reduced (8, 0);
+    // Drop-down arrow
+    auto arrowArea = area.removeFromRight (14).toFloat().withSizeKeepingCentre (9.0f, 5.0f);
+    juce::Path arrow;
+    arrow.addTriangle (arrowArea.getTopLeft(), arrowArea.getTopRight(), { arrowArea.getCentreX(), arrowArea.getBottom() });
+    g.setColour (kTextDim);
+    g.fillPath (arrow);
+
+    g.setFont (juce::Font (juce::FontOptions (10.0f)).boldened());
+    const int tagWidth = juce::GlyphArrangement::getStringWidthInt (g.getCurrentFont(), tag) + 12;
+    auto tagArea = area.removeFromLeft (tagWidth).withSizeKeepingCentre (tagWidth, 16).toFloat();
+    g.setColour (accent.withAlpha (0.2f));
+    g.fillRoundedRectangle (tagArea, 3.0f);
+    g.setColour (accent);
+    g.drawText (tag, tagArea, juce::Justification::centred);
+    area.removeFromLeft (8);
+
+    if (detail.isNotEmpty())
+    {
+        g.setFont (juce::Font (juce::FontOptions (11.0f)));
+        g.setColour (kTextDim);
+        const int w = juce::jmin (area.getWidth() / 3, juce::GlyphArrangement::getStringWidthInt (g.getCurrentFont(), detail) + 6);
+        g.drawText (detail, area.removeFromRight (w), juce::Justification::centredRight);
+    }
+    g.setFont (juce::Font (juce::FontOptions (14.5f)).boldened());
+    g.setColour (kText);
+    g.drawFittedText (name, area, juce::Justification::centredLeft, 1, 0.75f);
+}
+
+//==============================================================================
 NSynthAudioProcessorEditor::NSynthAudioProcessorEditor (NSynthAudioProcessor& p)
     : AudioProcessorEditor (p), synth (p)
 {
@@ -671,68 +715,29 @@ NSynthAudioProcessorEditor::NSynthAudioProcessorEditor (NSynthAudioProcessor& p)
     title.setFont (juce::Font (juce::FontOptions (24.0f)).boldened());
     content.addAndMakeVisible (title);
 
-    presetName.setJustificationType (juce::Justification::centred);
-    presetName.setColour (juce::Label::backgroundColourId, kBackground.darker (0.3f));
-    presetName.setColour (juce::Label::outlineColourId, kOutline);
-    presetName.setFont (juce::Font (juce::FontOptions (14.0f)));
-    content.addAndMakeVisible (presetName);
-    for (auto* b : { &prevPreset, &nextPreset, &loadPreset, &savePreset, &upperSelect, &lowerSelect, &initLayer, &copyUpToLow, &copyLowToUp,
+    content.addAndMakeVisible (presetDisplay);
+    presetDisplay.setTooltip ("Click to browse patches and performances");
+    presetDisplay.onClick = [this]
+    {
+        if (presetBrowser->isOpen())
+            presetBrowser->close();
+        else
+            openPresetBrowser (presetBrowser->getKind());
+    };
+    for (auto* b : { &prevPreset, &nextPreset, &savePreset, &upperSelect, &lowerSelect, &initLayer, &copyUpToLow, &copyLowToUp,
                      &loadPatch, &savePatch, &comparePatch, &modMatrixButton, &waveBrowserButton })
         content.addAndMakeVisible (*b);
 
-    prevPreset.onClick = [this] { stepPreset (-1); };
-    nextPreset.onClick = [this] { stepPreset (1); };
-    loadPreset.onClick = [this]
-    {
-        chooser = std::make_unique<juce::FileChooser> ("Load performance", synth.getPresetManager().getUserPresetDirectory(), "*.nsynthperf");
-        chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles, [this] (const juce::FileChooser& fc)
-        {
-            juce::String error;
-            if (fc.getResult() != juce::File() && ! synth.loadPerformance (fc.getResult(), &error))
-                juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Load failed", error);
-        });
-    };
-    savePreset.onClick = [this]
-    {
-        chooser = std::make_unique<juce::FileChooser> ("Save performance", synth.getPresetManager().getUserPresetDirectory(), "*.nsynthperf");
-        chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::warnAboutOverwriting, [this] (const juce::FileChooser& fc)
-        {
-            auto f = fc.getResult();
-            if (f == juce::File())
-                return;
-            juce::String error;
-            if (! synth.savePerformance (f.withFileExtension ("nsynthperf"), &error))
-                juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Save failed", error);
-        });
-    };
-    loadPatch.onClick = [this]
-    {
-        const auto factoryPatches = synth.getFactoryPatchDirectory();
-        const auto startDirectory = factoryPatches.isDirectory() ? factoryPatches : synth.getUserPatchDirectory();
-        chooser = std::make_unique<juce::FileChooser> ("Load layer patch", startDirectory, "*.nsynthpatch");
-        chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles, [this] (const juce::FileChooser& fc)
-        {
-            const auto file = fc.getResult();
-            if (file == juce::File())
-                return;
-            juce::String error;
-            if (! synth.loadPatch (bottomLayer, file, &error))
-                juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Patch load failed", error);
-        });
-    };
-    savePatch.onClick = [this]
-    {
-        chooser = std::make_unique<juce::FileChooser> ("Save layer patch", synth.getUserPatchDirectory(), "*.nsynthpatch");
-        chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::warnAboutOverwriting, [this] (const juce::FileChooser& fc)
-        {
-            const auto file = fc.getResult();
-            if (file == juce::File())
-                return;
-            juce::String error;
-            if (! synth.savePatch (bottomLayer, file, &error))
-                juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Patch save failed", error);
-        });
-    };
+    prevPreset.setTooltip ("Previous preset in the browser list");
+    nextPreset.setTooltip ("Next preset in the browser list");
+    prevPreset.onClick = [this] { presetBrowser->step (-1); };
+    nextPreset.onClick = [this] { presetBrowser->step (1); };
+    savePreset.setTooltip ("Save the shown patch or performance to the user folder");
+    savePreset.onClick = [this] { savePresetAs (presetBrowser->getKind()); };
+    loadPatch.setButtonText ("BROWSE");
+    loadPatch.setTooltip ("Browse patches for the selected layer");
+    loadPatch.onClick = [this] { openPresetBrowser (nSynth::PresetKind::patch); };
+    savePatch.onClick = [this] { savePresetAs (nSynth::PresetKind::patch); };
     comparePatch.setClickingTogglesState (true);
     comparePatch.onClick = [this]
     {
@@ -753,47 +758,48 @@ NSynthAudioProcessorEditor::NSynthAudioProcessorEditor (NSynthAudioProcessor& p)
     voiceMeter.setColour (juce::Label::textColourId, kTextDim);
     content.addAndMakeVisible (voiceMeter);
 
-    // Two identical rows of sound-shaping sections, UPPER on top.
-    // Three control rows per section keeps the columns wide enough for readable switches.
-    const std::pair<Section, int> rowSections[] = {
-        { Section::dds1, 2 }, { Section::dds2, 2 }, { Section::mixer, 1 }, { Section::vcf, 3 }, { Section::vca, 2 },
-        { Section::env1, 3 }, { Section::env2, 2 }, { Section::lfo1, 2 }, { Section::ddsMod, 3 } };
-    const std::pair<Section, int> sharedSections[] = {
-        { Section::perfControl, 5 }, { Section::voiceAssign, 3 }, { Section::delay, 3 }, { Section::reverb, 3 }, { Section::fx, 3 } };
+    // One layer at a time, three rows in signal-flow order (column counts set the section widths).
+    const std::vector<std::pair<Section, int>> rowLayout[3] = {
+        { { Section::dds1, 2 }, { Section::dds2, 2 }, { Section::mixer, 1 }, { Section::ddsMod, 3 }, { Section::vcf, 4 }, { Section::vca, 2 } },
+        { { Section::env1, 4 }, { Section::env2, 3 }, { Section::lfo1, 3 }, { Section::perfControl, 5 } },
+        { { Section::voiceAssign, 5 }, { Section::fx, 4 }, { Section::delay, 4 }, { Section::reverb, 4 } } };
 
     for (auto layer : { Layer::upper, Layer::lower })
     {
         auto& ui = layers[(size_t) toInt (layer)];
         const auto accent = accentForLayer (layer);
-        for (auto [section, cols] : rowSections)
-        {
-            ui.rowSections.push_back (makeSection (layer, section, cols, accent));
-            content.addAndMakeVisible (*ui.rowSections.back());
-        }
-        for (auto [section, cols] : sharedSections)
-        {
-            ui.sharedSections.push_back (makeSection (layer, section, cols, accent));
-            content.addChildComponent (*ui.sharedSections.back());
-        }
-        ui.rowLabel.setText (layer == Layer::upper ? "UPPER" : "LOWER", juce::dontSendNotification);
-        ui.rowLabel.setColour (juce::Label::textColourId, accent);
-        ui.rowLabel.setFont (juce::Font (juce::FontOptions (13.0f)).boldened());
-        ui.rowLabel.setJustificationType (juce::Justification::centred);
-        content.addAndMakeVisible (ui.rowLabel);
+        for (size_t row = 0; row < 3; ++row)
+            for (auto [section, cols] : rowLayout[row])
+            {
+                ui.rows[row].push_back (makeSection (layer, section, cols, accent));
+                content.addChildComponent (*ui.rows[row].back());
+            }
     }
 
-    performancePanel = std::make_unique<SectionPanel> ("Performance", kPerfAccent, 13);
-    controllerPanel = std::make_unique<SectionPanel> ("Controllers", kPerfAccent, 1);
+    upperSelect.setTooltip ("Edit the UPPER layer (the patch name is shown on the tab)");
+    lowerSelect.setTooltip ("Edit the LOWER layer (used by Dual and Split keyboard modes)");
+    upperSelect.setColour (juce::TextButton::buttonOnColourId, kUpperAccent.darker (0.45f));
+    lowerSelect.setColour (juce::TextButton::buttonOnColourId, kLowerAccent.darker (0.45f));
+    initLayer.setTooltip ("Reset the selected layer to the init patch");
+    comparePatch.setTooltip ("Toggle between the edited and the saved version of the patch");
+    copyUpToLow.setTooltip ("Copy the UPPER layer into LOWER");
+    copyLowToUp.setTooltip ("Copy the LOWER layer into UPPER");
+    savePatch.setTooltip ("Save the selected layer as a patch in the user folder");
+    layerHint.setColour (juce::Label::textColourId, kTextDim);
+    layerHint.setFont (juce::Font (juce::FontOptions (11.0f)));
+    layerHint.setJustificationType (juce::Justification::centredLeft);
+    content.addAndMakeVisible (layerHint);
+
+    // Performance settings and the live controllers (ribbon, mod lever, expression) share one strip.
+    performancePanel = std::make_unique<SectionPanel> ("Performance / Controllers", kPerfAccent,
+                                                       (int) getPerformanceParamSpecs().size());
     for (auto& spec : getPerformanceParamSpecs())
     {
-        const bool controller = juce::String (spec.suffix) == pid::ribbon || juce::String (spec.suffix) == pid::modLever
-                             || juce::String (spec.suffix) == pid::expression;
         auto control = std::make_unique<ParamControl> (synth.getState(), perfParamId (spec.suffix), spec, kPerfAccent);
         configureMidiLearn (*control);
-        (controller ? controllerPanel : performancePanel)->add (std::move (control));
+        performancePanel->add (std::move (control));
     }
     content.addAndMakeVisible (*performancePanel);
-    content.addAndMakeVisible (*controllerPanel);
     modMatrixPage = std::make_unique<ModMatrixPage> (synth.getEngine(), bottomLayer);
     modMatrixPage->onClose = [this] { modMatrixPage->setVisible (false); };
     content.addAndMakeVisible (*modMatrixPage);
@@ -802,6 +808,12 @@ NSynthAudioProcessorEditor::NSynthAudioProcessorEditor (NSynthAudioProcessor& p)
     waveBrowserPage->onClose = [this] { waveBrowserPage->setVisible (false); };
     content.addAndMakeVisible (*waveBrowserPage);
     waveBrowserPage->setVisible (false);
+    presetBrowser = std::make_unique<PresetBrowser> (synth);
+    presetBrowser->onTargetLayerChanged = [this] (Layer layer) { selectBottomLayer (layer); };
+    presetBrowser->onSaveRequested = [this] (nSynth::PresetKind kind) { savePresetAs (kind); };
+    presetBrowser->onClosed = [this] { refreshDisplay(); };
+    presetBrowser->onPresetLoaded = [this] { refreshDisplay(); };
+    content.addChildComponent (*presetBrowser);
 
     for (int pct : { 50, 75, 100, 125, 150, 200 })
         sizeBox.addItem (juce::String (pct) + " %", pct);
@@ -840,7 +852,12 @@ std::unique_ptr<SectionPanel> NSynthAudioProcessorEditor::makeSection (Layer lay
         { pid::velFixed, pid::velCurve, pid::velMode, false },      // Static: fixed velocity, Dynamic: curve
     };
 
-    auto panel = std::make_unique<SectionPanel> (sectionName (section), accent, columns);
+    auto title = sectionName (section);
+    if (section == Section::perfControl) title = "LFO 2 / Bend / Glide";
+    if (section == Section::ddsMod)      title = "Osc Modulation";
+    if (section == Section::vcf)         title = "Filter";
+    if (section == Section::vca)         title = "Amp";
+    auto panel = std::make_unique<SectionPanel> (title, accent, columns);
     ParamControl* previous = nullptr;
     for (auto& spec : getLayerParamSpecs())
         if (spec.section == section)
@@ -879,9 +896,12 @@ void NSynthAudioProcessorEditor::selectBottomLayer (Layer layer)
     bottomLayer = layer;
     if (modMatrixPage != nullptr)
         modMatrixPage->setLayer (layer);
+    if (presetBrowser != nullptr && presetBrowser->getTargetLayer() != layer)
+        presetBrowser->setTargetLayer (layer);
     for (auto l : { Layer::upper, Layer::lower })
-        for (auto& s : layers[(size_t) toInt (l)].sharedSections)
-            s->setVisible (l == layer);
+        for (auto& row : layers[(size_t) toInt (l)].rows)
+            for (auto& s : row)
+                s->setVisible (l == layer);
     upperSelect.setToggleState (layer == Layer::upper, juce::dontSendNotification);
     lowerSelect.setToggleState (layer == Layer::lower, juce::dontSendNotification);
 }
@@ -896,86 +916,73 @@ void NSynthAudioProcessorEditor::layoutContent()
 {
     auto r = juce::Rectangle<int> (0, 0, kDesignWidth, kDesignHeight).reduced (6);
 
-    auto header = r.removeFromTop (36);
+    auto header = r.removeFromTop (40);
     title.setBounds (header.removeFromLeft (110));
-    modMatrixButton.setBounds (header.removeFromLeft (92).withSizeKeepingCentre (92, 24));
+    modMatrixButton.setBounds (header.removeFromLeft (100).withSizeKeepingCentre (100, 28));
     header.removeFromLeft (6);
-    waveBrowserButton.setBounds (header.removeFromLeft (86).withSizeKeepingCentre (86, 24));
+    waveBrowserButton.setBounds (header.removeFromLeft (94).withSizeKeepingCentre (94, 28));
     header.removeFromLeft (6);
-    sizeBox.setBounds (header.removeFromRight (84).withSizeKeepingCentre (84, 24));
+    sizeBox.setBounds (header.removeFromRight (84).withSizeKeepingCentre (84, 26));
     header.removeFromRight (8);
-    voiceMeter.setBounds (header.removeFromRight (210));
-    auto bar = header.withSizeKeepingCentre (juce::jmin (480, header.getWidth() - 8), 26);
-    prevPreset.setBounds (bar.removeFromLeft (28));
-    savePreset.setBounds (bar.removeFromRight (58));
-    bar.removeFromRight (4);
-    loadPreset.setBounds (bar.removeFromRight (58));
+    voiceMeter.setBounds (header.removeFromRight (190));
+    auto bar = header.withSizeKeepingCentre (juce::jmin (600, header.getWidth() - 8), 30);
+    prevPreset.setBounds (bar.removeFromLeft (30));
+    savePreset.setBounds (bar.removeFromRight (62));
     bar.removeFromRight (6);
-    nextPreset.setBounds (bar.removeFromRight (28));
-    presetName.setBounds (bar.reduced (4, 0));
+    nextPreset.setBounds (bar.removeFromRight (30));
+    presetDisplay.setBounds (bar.reduced (4, 0));
     modMatrixPage->setBounds (juce::Rectangle<int> (0, 0, kDesignWidth, kDesignHeight));
     waveBrowserPage->setBounds (juce::Rectangle<int> (0, 0, kDesignWidth, kDesignHeight));
-
-    performancePanel->setBounds (r.removeFromTop (84));
+    presetBrowser->setBounds (juce::Rectangle<int> (0, 0, kDesignWidth, kDesignHeight));
     r.removeFromTop (4);
 
-    auto layoutRow = [] (juce::Rectangle<int> area, std::vector<std::unique_ptr<SectionPanel>>& sections)
+    performancePanel->setBounds (r.removeFromTop (84));
+    r.removeFromTop (6);
+
+    // Layer tabs with the loaded patch names, then the layer actions.
+    auto tabs = r.removeFromTop (34);
+    upperSelect.setBounds (tabs.removeFromLeft (290));
+    tabs.removeFromLeft (4);
+    lowerSelect.setBounds (tabs.removeFromLeft (290));
+    tabs.removeFromLeft (12);
+    for (auto* b : { &savePatch, &loadPatch, &copyLowToUp, &copyUpToLow, &comparePatch, &initLayer })
+    {
+        b->setBounds (tabs.removeFromRight (b == &savePatch ? 104 : 92).reduced (0, 3));
+        tabs.removeFromRight (5);
+    }
+    layerHint.setBounds (tabs);
+    r.removeFromTop (5);
+
+    auto layoutRow = [] (juce::Rectangle<int> area, std::vector<SectionPanel*> sections)
     {
         int totalCols = 0;
-        for (auto& s : sections)
+        for (auto* s : sections)
             totalCols += s->getColumns();
         const float colW = (float) area.getWidth() / (float) totalCols;
         float x = (float) area.getX();
-        for (auto& s : sections)
+        for (auto* s : sections)
         {
             const float w = colW * (float) s->getColumns();
-            s->setBounds (juce::Rectangle<float> (x, (float) area.getY(), w, (float) area.getHeight()).toNearestInt().reduced (1));
+            s->setBounds (juce::Rectangle<float> (x, (float) area.getY(), w, (float) area.getHeight()).toNearestInt().reduced (2));
             x += w;
         }
     };
 
+    const int rowHeights[] = { 222, 184, 0 };
     for (auto layer : { Layer::upper, Layer::lower })
     {
+        auto area = r;
         auto& ui = layers[(size_t) toInt (layer)];
-        auto row = r.removeFromTop (214);
-        // Vertical caption: lay out horizontally, then rotate -90 degrees into the left strip.
-        const auto strip = row.removeFromLeft (20);
-        ui.rowLabel.setBounds (0, 0, strip.getHeight(), strip.getWidth());
-        ui.rowLabel.setTransform (juce::AffineTransform::rotation (-juce::MathConstants<float>::halfPi)
-                                      .translated ((float) strip.getX(), (float) strip.getBottom()));
-        layoutRow (row, ui.rowSections);
-        r.removeFromTop (3);
+        for (size_t row = 0; row < 3; ++row)
+        {
+            auto rowArea = row < 2 ? area.removeFromTop (rowHeights[row]) : area;
+            area.removeFromTop (row < 2 ? 4 : 0);
+            std::vector<SectionPanel*> sections;
+            for (auto& s : ui.rows[row])
+                sections.push_back (s.get());
+            layoutRow (rowArea, sections);
+        }
     }
-
-    auto bottom = r;
-    auto layerBlock = bottom.removeFromLeft (158).reduced (2);
-    auto selectRow = layerBlock.removeFromTop (30);
-    upperSelect.setBounds (selectRow.removeFromLeft (selectRow.getWidth() / 2 - 2));
-    selectRow.removeFromLeft (4);
-    lowerSelect.setBounds (selectRow);
-    layerBlock.removeFromTop (6);
-
-    const int buttonRowH = 26;
-    auto row1 = layerBlock.removeFromTop (buttonRowH);
-    initLayer.setBounds (row1.removeFromLeft (row1.getWidth() / 2 - 2));
-    row1.removeFromLeft (4);
-    comparePatch.setBounds (row1);
-    layerBlock.removeFromTop (5);
-
-    auto row2 = layerBlock.removeFromTop (buttonRowH);
-    copyUpToLow.setBounds (row2.removeFromLeft (row2.getWidth() / 2 - 2));
-    row2.removeFromLeft (4);
-    copyLowToUp.setBounds (row2);
-    layerBlock.removeFromTop (5);
-
-    auto row3 = layerBlock.removeFromTop (buttonRowH);
-    loadPatch.setBounds (row3.removeFromLeft (row3.getWidth() / 2 - 2));
-    row3.removeFromLeft (4);
-    savePatch.setBounds (row3);
-
-    controllerPanel->setBounds (bottom.removeFromRight (160).reduced (1));
-    for (auto layer : { Layer::upper, Layer::lower })
-        layoutRow (bottom, layers[(size_t) toInt (layer)].sharedSections);
 }
 
 void NSynthAudioProcessorEditor::paint (juce::Graphics& g)
@@ -993,38 +1000,71 @@ void NSynthAudioProcessorEditor::resized()
     sizeBox.setSelectedId (sizeBox.indexOfItemId (pct) >= 0 ? pct : 0, juce::dontSendNotification);
 }
 
-std::vector<juce::File> NSynthAudioProcessorEditor::allPresets() const
+void NSynthAudioProcessorEditor::openPresetBrowser (nSynth::PresetKind kind)
 {
-    auto& pm = synth.getPresetManager();
-    auto files = pm.getFactoryPresets();
-    auto user = pm.getUserPresets();
-    files.insert (files.end(), user.begin(), user.end());
-    return files;
+    modMatrixPage->setVisible (false);
+    waveBrowserPage->setVisible (false);
+    presetBrowser->open (kind, bottomLayer);
 }
 
-void NSynthAudioProcessorEditor::stepPreset (int delta)
+void NSynthAudioProcessorEditor::savePresetAs (nSynth::PresetKind kind)
 {
-    auto files = allPresets();
-    if (files.empty())
-        return;
-
-    int index = -1;
-    for (int i = 0; i < (int) files.size(); ++i)
-        if (files[(size_t) i].getFileNameWithoutExtension() == synth.getCurrentPresetName())
-            index = i;
-
-    index = (index + delta + (int) files.size()) % (int) files.size();
-    juce::String error;
-    if (! synth.loadPerformance (files[(size_t) index], &error))
-        juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Load failed", error);
+    const bool patch = kind == nSynth::PresetKind::patch;
+    const auto directory = synth.getPresetLibrary().getUserDirectory (kind);
+    directory.createDirectory();
+    const auto suggested = patch ? synth.getPatchName (bottomLayer) : synth.getCurrentPresetName();
+    chooser = std::make_unique<juce::FileChooser> (patch ? "Save layer patch" : "Save performance",
+                                                   directory.getChildFile (juce::File::createLegalFileName (suggested)),
+                                                   patch ? "*.nsynthpatch" : "*.nsynthperf");
+    chooser->launchAsync (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::warnAboutOverwriting,
+                          [this, patch] (const juce::FileChooser& fc)
+    {
+        const auto file = fc.getResult();
+        if (file == juce::File())
+            return;
+        juce::String error;
+        const bool ok = patch ? synth.savePatch (bottomLayer, file, &error)
+                              : synth.savePerformance (file.withFileExtension ("nsynthperf"), &error);
+        if (! ok)
+            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Save failed", error);
+        if (presetBrowser->isOpen())
+            presetBrowser->refresh();
+        refreshDisplay();
+    });
 }
 
 void NSynthAudioProcessorEditor::refreshDisplay() noexcept
 {
     const auto patchDirty = synth.isPatchDirty (bottomLayer);
-    presetName.setText (synth.getCurrentPresetName() + "  |  " + synth.getPatchName (bottomLayer)
-                        + (patchDirty ? "*" : ""), juce::dontSendNotification);
+    const auto patchName = synth.getPatchName (bottomLayer) + (patchDirty ? " *" : "");
+    if (presetBrowser->getKind() == nSynth::PresetKind::patch)
+        presetDisplay.setContent (bottomLayer == Layer::upper ? "UPPER" : "LOWER", patchName,
+                                  synth.getPatchCategory (bottomLayer), accentForLayer (bottomLayer));
+    else
+        presetDisplay.setContent ("PERF", synth.getCurrentPresetName(),
+                                  "U: " + synth.getPatchName (Layer::upper) + "  L: " + synth.getPatchName (Layer::lower),
+                                  kPerfAccent);
     comparePatch.setToggleState (synth.isPatchCompareActive (bottomLayer), juce::dontSendNotification);
+
+    for (auto [button, layer] : { std::pair { &upperSelect, Layer::upper }, std::pair { &lowerSelect, Layer::lower } })
+    {
+        const auto text = juce::String (layer == Layer::upper ? "UPPER" : "LOWER") + "   " + synth.getPatchName (layer)
+                        + (synth.isPatchDirty (layer) ? " *" : "");
+        if (button->getButtonText() != text)
+            button->setButtonText (text);
+    }
+    auto& state = synth.getState();
+    const int keyboardMode = (int) state.getRawParameterValue (perfParamId (pid::kbdMode))->load();
+    const int singleLayer = (int) state.getRawParameterValue (perfParamId (pid::singleLayer))->load();
+    juce::String hint;
+    if (keyboardMode == toInt (KeyboardMode::single))
+        hint = juce::String ("Single: only ") + (singleLayer == 0 ? "UPPER" : "LOWER") + " plays";
+    else if (keyboardMode == toInt (KeyboardMode::dual))
+        hint = "Dual: both layers play";
+    else
+        hint = "Split at " + juce::MidiMessage::getMidiNoteName ((int) state.getRawParameterValue (perfParamId (pid::splitPoint))->load(), true, true, 4)
+             + ": LOWER below, UPPER above";
+    layerHint.setText (hint, juce::dontSendNotification);
     voiceMeter.setText ("Voices  U " + juce::String (synth.getActiveVoices (Layer::upper))
                         + "  /  L " + juce::String (synth.getActiveVoices (Layer::lower)),
                         juce::dontSendNotification);

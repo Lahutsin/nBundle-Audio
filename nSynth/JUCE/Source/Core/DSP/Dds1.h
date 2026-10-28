@@ -46,6 +46,9 @@ public:
 
     // Relative frequency offsets of the cores at full detune.
     static float coreOffset (int core) noexcept;
+    // Roland JP-8000 super saw detune response (Adam Szabo's measurement): gentle over most of
+    // the knob, a steep rise near the top. 0..1 -> 0..1 scale of the core offsets.
+    static float superDetuneCurve (float knob) noexcept;
     static void coreGains (SuperMode mode, float& centroidGain, float& sisterGain) noexcept;
 
 private:

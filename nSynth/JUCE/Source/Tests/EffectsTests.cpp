@@ -340,3 +340,4 @@ public:
 };
 
 static EffectsTests effectsTests;
+

@@ -3,7 +3,8 @@
 //   nSynthTests --list               list test names
 //   nSynthTests --only "<name>"      run a single test
 //   nSynthTests --dump-params <file> write the Markdown parameter table (docs/02-PARAMETERS.md)
-//   nSynthTests --snapshot <file.png> [scale]  render the editor to a PNG (docs/Plugin.png)
+//   nSynthTests --snapshot <file.png> [scale] [--browser]  render the editor (optionally with the
+//                                    preset browser open) to a PNG (docs/Plugin.png)
 #include <juce_gui_basics/juce_gui_basics.h>
 #include "Core/Params/ParamRegistry.h"
 #include "PluginProcessor.h"
@@ -81,10 +82,16 @@ int main (int argc, char* argv[])
     if (args.contains ("--snapshot"))
     {
         const auto path = args[args.indexOf ("--snapshot") + 1];
-        const float scale = args.size() > args.indexOf ("--snapshot") + 2 ? args[args.indexOf ("--snapshot") + 2].getFloatValue() : 1.0f;
+        const auto scaleArg = args[args.indexOf ("--snapshot") + 2];
+        const float scale = scaleArg.containsOnly ("0123456789.") && scaleArg.isNotEmpty() ? scaleArg.getFloatValue() : 1.0f;
         NSynthAudioProcessor proc;
         std::unique_ptr<NSynthAudioProcessorEditor> editor (dynamic_cast<NSynthAudioProcessorEditor*> (proc.createEditor()));
         editor->setScale (scale);
+        if (args.contains ("--browser"))
+        {
+            editor->openPresetBrowser (nSynth::PresetKind::patch);
+            editor->getPresetBrowser().loadRow (2, false);
+        }
         const auto image = editor->createComponentSnapshot (editor->getLocalBounds(), true, 1.0f);
         auto file = juce::File::getCurrentWorkingDirectory().getChildFile (path);
         file.deleteFile();

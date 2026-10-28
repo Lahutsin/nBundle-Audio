@@ -37,22 +37,44 @@ public:
     {
         WaveBank bank;
 
-        beginTest ("classic saw table matches 2p-1 away from the discontinuity");
+        beginTest ("classic saw: a rising, slightly convex (Minimoog-style) ramp from -1 to +1");
         {
             const auto& saw = bank.classic (1);
-            float maxErr = 0.0f;
+            // The table is built from harmonics 1..N/2, so the ramp's DC offset is removed.
+            double dc = 0.0;
+            for (int i = 0; i < 4096; ++i)
+                dc += (2.0 * WaveBank::analogRamp (i / 4096.0) - 1.0) / 4096.0;
+            float maxErr = 0.0f, previous = -2.0f;
+            bool rising = true;
             for (double p = 0.05; p < 0.95; p += 0.01)
-                maxErr = juce::jmax (maxErr, std::abs (saw.read (0, p) - (float) (2.0 * p - 1.0)));
+            {
+                const float v = saw.read (0, p);
+                maxErr = juce::jmax (maxErr, std::abs (v - (float) (2.0 * WaveBank::analogRamp (p) - 1.0 - dc)));
+                rising = rising && v > previous;
+                previous = v;
+            }
             expectLessThan (maxErr, 0.01f);
+            expect (rising);
+            expectGreaterThan (saw.read (0, 0.5) + (float) dc, 0.02f);   // convex: above the straight line at the midpoint
         }
 
-        beginTest ("classic triangle and square shapes");
+        beginTest ("classic triangle (rounded tips), square (drooping plateaus), pure sine");
         {
             expectWithinAbsoluteError (bank.classic (3).read (0, 0.25), 1.0f, 0.01f);
             expectWithinAbsoluteError (bank.classic (3).read (0, 0.75), -1.0f, 0.01f);
-            expectWithinAbsoluteError (bank.classic (2).read (0, 0.25), 1.0f, 0.02f);
-            expectWithinAbsoluteError (bank.classic (2).read (0, 0.75), -1.0f, 0.02f);
+            expectGreaterThan (bank.classic (3).read (0, 0.125), 0.6f);  // rounded: above the straight 0.5
+            const float early = bank.classic (2).read (0, 0.05), late = bank.classic (2).read (0, 0.45);
+            expectWithinAbsoluteError (early, 1.0f, 0.03f);
+            expectLessThan (late, early - 0.03f);                       // the plateau droops
+            expectWithinAbsoluteError (bank.classic (2).read (0, 0.55), -1.0f, 0.03f);
             expectWithinAbsoluteError (bank.classic (0).read (0, 0.25), 1.0f, 1.0e-4f);
+        }
+
+        beginTest ("alt waves are named after their hardware families");
+        {
+            expectEquals (WaveBank::altWaveNames().size(), WaveBank::kNumAltWaves);
+            for (const auto& name : WaveBank::altWaveNames())
+                expect (name.startsWith ("TX ") || name.startsWith ("CZ ") || name.startsWith ("DW ") || name.startsWith ("PPG "), name);
         }
 
         beginTest ("every mip level is band-limited to its harmonic budget");

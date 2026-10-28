@@ -46,7 +46,8 @@ public:
     bool popMidiParameterChange (MidiParameterChange& change) noexcept;
     bool hasPendingMidiParameterChanges() const noexcept;
     uint32_t getDroppedMidiParameterChanges() const noexcept { return droppedMidiParameterChanges.load(); }
-    const WaveBank& getWaveBank() const noexcept { return *std::atomic_load (&waveBank); }
+    // The newest bank: a restored bank waiting for the audio thread counts as current.
+    const WaveBank& getWaveBank() const noexcept { return *latestWaveBank(); }
     bool requestWaveImport (int slot, const juce::File& file, juce::String* error = nullptr);
     WaveImportState getWaveImportState() const noexcept { return waveImportState.load(); }
     juce::String getWaveImportError() const;
@@ -54,6 +55,11 @@ public:
     KeyboardMode getKeyboardMode() const noexcept { return currentMode; }
 
 private:
+    std::shared_ptr<const WaveBank> latestWaveBank() const
+    {
+        auto pending = std::atomic_load (&pendingWaveBank);
+        return pending != nullptr ? pending : std::atomic_load (&waveBank);
+    }
     void renderSegmentsCombined (int hostStart, int hostNum) noexcept;
     static void renderCombinedVoiceItem (void* context, int itemIndex, int lane) noexcept;
     void assignVoices (KeyboardMode mode, Layer singleLayer);
@@ -105,6 +111,7 @@ private:
     std::atomic<bool> midiStateRefresh { false };
 
     juce::AudioBuffer<float> upperBuffer, lowerBuffer;
+    OutputLimiter limiter;
     std::vector<ParameterBinding> parameterBindings;
     std::array<std::atomic<int>, 128> learnedCCBinding;
     std::atomic<int> pendingMidiLearnBinding { -1 };

@@ -8,6 +8,8 @@ reverb).
 
 ![nSynth plugin UI](docs/Plugin.png)
 
+![nSynth preset browser](docs/PresetBrowser.png)
+
 The full design plan, DSP specification, parameter registry, UI spec,
 preset-manager design and phased roadmap live in [docs/](./docs):
 
@@ -28,34 +30,50 @@ The synthesis core, dual-layer voice architecture, modulation matrix,
 wavetable system, MIDI/MPE engine, compact UI, multi-core scheduler, and
 factory content are implemented:
 
-- DDS1: 7-core "super" oscillator (OFF / 1/2 / ON, detune), sine/saw/square/
-  triangle/noise/alt waves, morphing, 32 alternative waveforms (`.ws6` I/O).
-- DDS2: algorithmic polyBLEP oscillator, NORM/RING/SYNC, LFO range, sub oscillator.
-- Cross mod (exponential FM), mixer, 1-pole HPF -> 4-pole ZDF ladder LPF with
-  drive 0/1/2, per-stage analog saturation, keytrack, self-oscillation; the fully open filter stays flat
-  across the audible band. VCA with ENV2/fixed envelopes.
+- DDS1: 7-core JP-8000 style super saw (OFF / 1/2 / ON; Roland's detune response and
+  centre/side mix curves), analog-modelled shapes (Minimoog-style convex saw ramp,
+  Prophet-style square with plateau droop, rounded triangle, pure sine), noise, morphing,
+  32 named alternative waveforms (`.ws6` I/O): TX = Yamaha 4-op FM waves, CZ = Casio phase
+  distortion incl. the resonance waves, DW = Korg DW-8000 style spectra, PPG = vocal/digital.
+- DDS2: polyBLEP oscillator with the same analog shapes, NORM/RING/SYNC, LFO range, sub oscillator.
+- Cross mod (exponential FM), mixer, 1-pole HPF -> analog-modelled low-pass (VCF TYPE):
+  Moog 24 / Moog 12 (transistor ladder, tanh in every stage and at the input), Jupiter 24
+  (OTA cascade), SEM 12 (saturating state-variable filter). All zero-delay-feedback, drive
+  OFF/1/2, half the ladder's resonance bass loss made up at the input, self-oscillation;
+  the fully open filter stays flat across the audible band. VCA with ENV2/fixed envelopes.
 - ENV1 (attack hold, decay hold, loop, inverted, keytrack), ENV2, per-voice LFO1
   (LR phase, HF modes) and LFO2 (trigger modes), drift.
 - 64-voice pool shared by UPPER/LOWER: Single/Dual/Split, Solo/Legato/Poly 1/Poly 2,
-  unison sizes, portamento, hold/sustain.
+  unison sizes (stacks spread over +/- 1.5 x DETUNE, level-matched to a single voice,
+  fanned out over STEREO WIDTH), portamento, hold/sustain. A stolen voice that is still
+  sounding keeps its oscillator phases, so voice stealing does not click.
 - Binaural Off / x1 / x2: x1 plays one voice per ear (32 stereo notes in Single),
   x2 (default) a mirrored-detuned pair per ear, 4 voices per note (16 notes in Single,
-  8 per layer in Dual/Split), with adjustable BINAURAL DETUNE.
-- Velocity: Dynamic (played velocity through an adjustable curve) or Static
-  (fixed velocity), plus sensitivity for level and brightness.
+  8 per layer in Dual/Split), with adjustable BINAURAL DETUNE and STEREO WIDTH
+  (how far apart the left/right voices sit; 1 = the former hard left/right).
+- Velocity: Static (default, every note at STATIC VEL) or Dynamic (played velocity
+  through an adjustable curve), plus sensitivity for level and brightness.
 - Per-layer air shelf -> chorus (I/II/I+II voices, rate, depth, delay, feedback,
   width, mix) -> delay (tempo divisions 1/64..1/1 incl. triplets/dotted or 1..2000 ms,
   feedback, mix, ping-pong, low/high cut, freeze) -> reverb (size, decay, pre-delay,
   high/low cut, width, modulation, mix).
-- Fixed 2x internal oversampling; Mix + optional Upper/Lower outputs;
-  lock-free atomic work-stealing across all CPU cores.
-- Compact editor generated from the parameter registry with uniform scaling 50-200 %.
-- Performance presets (`.nsynthperf`), layer patches (`.nsynthpatch`), layer init/copy.
+- Fixed 2x internal oversampling; Mix + optional Upper/Lower outputs; a stereo-linked
+  safety limiter (-0.3 dBFS ceiling) on the main mix; a non-finite sample can never reach the
+  FX feedback loops (the layer would otherwise go silent until reload); lock-free atomic
+  work-stealing across all CPU cores.
+- Editor generated from the parameter registry with uniform scaling 50-200 %: one layer at
+  a time (UPPER / LOWER tabs show the loaded patch), sections in signal-flow order
+  (oscillators -> filter -> amp, envelopes/LFOs, voice and effects), performance settings and
+  live controllers in one strip.
+- Performance presets (`.nsynthperf`), layer patches (`.nsynthpatch`), layer init/copy,
+  and a preset browser (see below).
 
-Factory content: 112 patches in seven categories and 16 performances, plus an
-offline DSP/CPU analysis target. Verified on Linux: `nSynthTests` (68,124 checks,
-0 failures). AU validation and the AU build have not been re-run since the
-voice/effects rework (now 211 parameters). Manual host/controller/pluginval
+Factory content: 112 hand-designed, loudness-matched patches in seven categories
+and 16 performances (8 layers, 8 splits), plus an offline DSP/CPU analysis target.
+Verified on Linux: `nSynthTests` (81,065 checks, 0 failures, including a random-patch
+robustness test). AU validation and the AU build have not been re-run since the
+voice/effects rework (now 215 parameters).
+Manual host/controller/pluginval
 checks remain open. Current verification status is in
 [docs/07-QA-AND-VALIDATION.md](./docs/07-QA-AND-VALIDATION.md), with phase
 details in [docs/06-ROADMAP.md](./docs/06-ROADMAP.md).
@@ -68,7 +86,7 @@ from GitHub during configure time.
 - `JUCE/` contains the CMake project.
 - `JUCE/Source/Core/` contains the DSP and engine (shared with the tests).
 - `JUCE/Source/Tests/` contains the `nSynthTests` unit/integration tests.
-- `Presets/` contains the factory `Patch`/`Performance` library.
+- `Presets/` contains the factory `Patch`/`Performance` library (compiled into the plug-in).
 - `.vscode/tasks.json` contains a ready-to-run VS Code build task.
 
 ## Requirements
@@ -80,6 +98,45 @@ from GitHub during configure time.
 - Git
 - Internet access for the first configure step when `NSYNTH_FETCH_JUCE=ON`
 
+## Presets and the preset browser
+
+Click the preset name in the header (or BROWSE in the layer bar) to open the browser:
+
+- PATCHES / PERFORMANCES tabs; patches load into the layer chosen with LOAD INTO
+  (UPPER / LOWER, follows the layer selected in the editor). Patches are layer
+  independent: any patch loads into either layer.
+- Categories with counts, Favourites (click the star) and User; live search by name
+  or category.
+- A single click (or the arrow keys) auditions a preset immediately; a double click or
+  Enter loads it and closes the browser; Esc closes. The `<` / `>` buttons in the header
+  step through the current browser list even while it is closed.
+- INIT LAYER, SAVE AS..., IMPORT... (copies the file into the user folder),
+  OPEN FOLDER and RESCAN.
+
+The factory library is embedded in the binary (`juce_add_binary_data`), so every
+format finds it wherever the host or installer puts the bundle. User presets and
+favourites live in `~/Documents/nBundleAudio/nSynth/` (`Patches/`, `Performances/`,
+sub-folders become user categories, `Favourites.xml`).
+
+The library is generated from the sound designs in
+`JUCE/Source/Tools/FactoryContentGenerator.cpp`. The generator renders every patch
+with a phrase typical for its category and matches its VCA level, so all factory
+sounds play at a similar loudness. From `nSynth/JUCE`:
+
+```bash
+cmake --build build --target nSynthFactoryGenerator -j8
+./build/nSynthFactoryGenerator_artefacts/Release/nSynthFactoryGenerator --output ../Presets
+cmake --build build -j8        # re-embeds the regenerated library
+```
+
+Render presets to WAV for listening tests (prints peak and loudness):
+
+```bash
+cmake --build build --target nSynthRender -j8
+./build/nSynthRender_artefacts/Release/nSynthRender --factory --outdir /tmp/nsynth-renders
+./build/nSynthRender_artefacts/Release/nSynthRender --patch ../Presets/Patches/Pads/15_Open_Sky.nsynthpatch --out open-sky.wav
+```
+
 ## DSP/CPU analysis
 
 From `nSynth/JUCE`:
@@ -90,7 +147,7 @@ cmake --build build --target nSynthAnalysis -j8
 ```
 
 Regenerate the factory library with the `nSynthFactoryGenerator` target; see
-[Presets/README.md](./Presets/README.md).
+[Presets and the preset browser](#presets-and-the-preset-browser).
 
 ### macOS
 
@@ -182,6 +239,7 @@ Studio generator.
 ./JUCE/build/nSynthTests_artefacts/Release/nSynthTests --only Engine
 ./JUCE/build/nSynthTests_artefacts/Release/nSynthTests --dump-params docs/02-PARAMETERS.gen.md
 ./JUCE/build/nSynthTests_artefacts/Release/nSynthTests --snapshot docs/Plugin.png 1.0
+./JUCE/build/nSynthTests_artefacts/Release/nSynthTests --snapshot docs/PresetBrowser.png 1.0 --browser
 auval -v aumu nSyn NSYA                                          # macOS: AU VALIDATION SUCCEEDED
 ```
 

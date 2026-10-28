@@ -119,7 +119,13 @@ float Voice::fastExp2 (float x) noexcept
 void Voice::prepare (double internalSampleRate, const WaveBank* bank, uint32_t seed)
 {
     waveBank = bank;
-    rng.setSeed ((juce::int64) seed);
+    // juce::Random is an LCG: consecutive seeds give linearly related first outputs, which made
+    // the free-running start phases of the voices an arithmetic series (stacked voices partly
+    // cancelled). A splitmix64 finaliser decorrelates the per-voice seeds.
+    uint64_t z = (uint64_t) seed + 0x9e3779b97f4a7c15ull;
+    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ull;
+    z = (z ^ (z >> 27)) * 0x94d049bb133111ebull;
+    rng.setSeed ((juce::int64) (z ^ (z >> 31)));
     dds1.setWaveBank (bank);
     dds1.randomisePhases (rng);
     lfo1.setPhase (rng.nextDouble());
@@ -189,8 +195,16 @@ void Voice::triggerEnvelopes() noexcept
     fixedEnv.noteOn();
 }
 
+bool Voice::isAudible() const noexcept
+{
+    return active && getAmpEnvelope().getValue() > 1.0e-3f;
+}
+
 void Voice::start (const StartInfo& info, const LayerSnapshot& p)
 {
+    // A stolen voice that is still sounding keeps its oscillator phases: resetting them in the
+    // middle of a cycle is an audible click. Silent voices restart from the defined phase.
+    const bool keepPhases = isAudible();
     note = info.note;
     midiChannel = juce::jlimit (1, 16, info.midiChannel);
     velocity = info.velocity;
@@ -200,6 +214,7 @@ void Voice::start (const StartInfo& info, const LayerSnapshot& p)
     isMpeMember = false;
     pitchOffset = info.pitchOffset;
     twinSign = info.twinSign;
+    unisonDetune = info.detuneSemitones;
     voiceGain = info.gain;
     side = info.side;
     age = info.age;
@@ -212,25 +227,27 @@ void Voice::start (const StartInfo& info, const LayerSnapshot& p)
         currentPitch = targetPitch;
     hasPlayed = true;
 
-    switch (side)
-    {
-        case Side::left:  panL = 1.0f; panR = 0.0f; break;
-        case Side::right: panL = 0.0f; panR = 1.0f; break;
-        case Side::mono:
-        {
-            const float angle = (juce::jlimit (-1.0f, 1.0f, info.pan) + 1.0f) * juce::MathConstants<float>::pi * 0.25f;
-            panL = std::cos (angle);
-            panR = std::sin (angle);
-            break;
-        }
-    }
+    // Binaural voices sit WIDTH apart with an equal-power law: fully decorrelated hard left/right
+    // voices sound hollow and collapse in mono, a partial overlap keeps a solid centre.
+    // A single (mono) voice uses a balance law, so a centred voice plays at full level on both sides.
+    const float width = juce::jlimit (0.0f, 1.0f, info.width);
+    const float position = side == Side::left ? -width : side == Side::right ? width : juce::jlimit (-1.0f, 1.0f, info.pan);
+    const float angle = (position + 1.0f) * juce::MathConstants<float>::pi * 0.25f;
+    const float law = side == Side::mono ? juce::MathConstants<float>::sqrt2 : 1.0f;
+    panL = juce::jmin (1.0f, law * std::cos (angle));
+    panR = juce::jmin (1.0f, law * std::sin (angle));
+    if (position <= -1.0f) panR = 0.0f;
+    if (position >= 1.0f)  panL = 0.0f;
 
     envTimeScale = 1.0f + p.drift * 0.1f * (rng.nextFloat() * 2.0f - 1.0f);
 
     if (info.retrigger || ! active)
     {
-        dds1.noteOn (p.superMode);
-        dds2.noteOn();
+        if (! keepPhases)
+        {
+            dds1.noteOn (p.superMode);
+            dds2.noteOn();
+        }
         if (info.lfo1Phase >= 0.0)
             lfo1.setPhase (info.lfo1Phase);
         lfo1.noteOn (false, p.lfo1Mode == Lfo1Mode::onceOrDds1 && toInt (p.lfo1Wave) < toInt (Lfo1Wave::hf), 0.0, rng);
@@ -258,8 +275,11 @@ void Voice::changeNote (int newNote, float newVelocity, bool retrigger, uint64_t
     if (retrigger)
     {
         velocity = newVelocity;
-        dds1.noteOn (p.superMode);
-        dds2.noteOn();
+        if (! isAudible())
+        {
+            dds1.noteOn (p.superMode);
+            dds2.noteOn();
+        }
         if (p.lfo1Mode != Lfo1Mode::freeOrNorm && toInt (p.lfo1Wave) < toInt (Lfo1Wave::hf))
         {
             lfo1.setPhase (side == Side::right ? p.lfo1LrPhase : 0.0);
@@ -305,12 +325,12 @@ void Voice::kill() noexcept
     lastModSources.fill (0.0f);
 }
 
-float Voice::lfo1RateHz (const LayerSnapshot& p, const VoiceContext& ctx) const noexcept
+float Voice::lfo1RateHz (const LayerSnapshot& p, float rateFader, const VoiceContext& ctx) const noexcept
 {
     switch (p.lfo1Wave)
     {
-        case Lfo1Wave::hf:      return (float) rates::highFrequencyHz (p.lfo1Rate);
-        case Lfo1Wave::hfTrack: return (float) (noteToHz (currentPitch + (double) ctx.layerPitchOffset) * rates::hfTrackRatio (p.lfo1Rate));
+        case Lfo1Wave::hf:      return (float) rates::highFrequencyHz (rateFader);
+        case Lfo1Wave::hfTrack: return (float) (noteToHz (currentPitch + (double) ctx.layerPitchOffset) * rates::hfTrackRatio (rateFader));
         case Lfo1Wave::triangle:
         case Lfo1Wave::revSaw:
         case Lfo1Wave::sampleHold:
@@ -320,10 +340,10 @@ float Voice::lfo1RateHz (const LayerSnapshot& p, const VoiceContext& ctx) const 
     if (p.lfo1Sync)
     {
         const auto& beats = rates::lfo1SyncBeats();
-        const double b = beats[(size_t) rates::divisionIndex (p.lfo1Rate, (int) beats.size())];
+        const double b = beats[(size_t) rates::divisionIndex (rateFader, (int) beats.size())];
         return (float) (ctx.bpm / 60.0 / b);
     }
-    return (float) rates::lowFrequencyHz (p.lfo1Rate);
+    return (float) rates::lowFrequencyHz (rateFader);
 }
 
 float Voice::driftWalk (float& value, float& target, int& counter) noexcept
@@ -452,6 +472,16 @@ void Voice::render (float* outL, float* outR, int startSample, int numSamples, c
     d1s.altB = p.altB;
     d1s.mirrorDetune = side == Side::right;
 
+    // Only the fields addressed by direct routes differ from `p`; they are rewritten every
+    // sample from the panel values, so one copy per block is enough.
+    LayerSnapshot directScratch;
+    if (hasAnyDirectTarget)
+        directScratch = p;
+
+    // The LFO1 rate (a pow() per sample) is only recomputed when its fader moves.
+    const auto lfo1Wave = p.lfo1Wave;
+    float lastLfo1Fader = -1.0f, lastLfo1Hz = 0.0f;
+
     float l2 = 0.0f;
     for (int i = startSample; i < startSample + numSamples; ++i)
     {
@@ -485,7 +515,7 @@ void Voice::render (float* outL, float* outR, int startSample, int numSamples, c
         };
         lastModSources = modSources;
 
-        LayerSnapshot effective = p;
+        const LayerSnapshot& effective = hasAnyDirectTarget ? directScratch : p;
         if (hasAnyDirectTarget)
         {
             for (int target = 0; target < ModMatrixData::directTargetCount; ++target)
@@ -497,7 +527,7 @@ void Voice::render (float* outL, float* outR, int startSample, int numSamples, c
                 float normalized = range.convertTo0to1 (directParameterValue (p, directTarget));
                 for (int source = 0; source < ModMatrixData::sourceCount; ++source)
                     normalized += modSources[(size_t) source] * matrix.direct[(size_t) source][(size_t) target];
-                setDirectParameterValue (effective, directTarget, range.convertFrom0to1 (juce::jlimit (0.0f, 1.0f, normalized)));
+                setDirectParameterValue (directScratch, directTarget, range.convertFrom0to1 (juce::jlimit (0.0f, 1.0f, normalized)));
             }
             if (hasEnvelopeDirectTarget && (i & 7) == 0)
                 applyEnvelopeSettings (effective);
@@ -513,9 +543,12 @@ void Voice::render (float* outL, float* outR, int startSample, int numSamples, c
                             : baseLfo2Hz;
         l2 = lfo2.process (lfo2Hz, lfo2Shape, rng) * lfo2Ramp.process (effective.lfo2Delay) * lfo2Depth;
         const float lfo1Fader = modulatedFader (ModTarget::lfo1Rate, effective.lfo1Rate, modSources);
-        LayerSnapshot rateSnapshot = effective;
-        rateSnapshot.lfo1Rate = lfo1Fader;
-        const float lfo1Hz = lfo1RateHz (rateSnapshot, ctx);
+        if (lfo1Fader != lastLfo1Fader || lfo1Wave == Lfo1Wave::hfTrack)
+        {
+            lastLfo1Fader = lfo1Fader;
+            lastLfo1Hz = lfo1RateHz (effective, lfo1Fader, ctx);
+        }
+        const float lfo1Hz = lastLfo1Hz;
         const float l1Raw = lfo1.process (lfo1Hz, lfo1Shape, rng);
         const float l1 = lfo1Hf ? l1Raw : l1Raw * lfo1Ramp.process (effective.lfo1Delay);
         const float l1Mod = lfo1Hf && p.lfo1Mode != Lfo1Mode::freeOrNorm ? 0.0f : l1; // routed HF LFO is audio, not CV
@@ -533,7 +566,7 @@ void Voice::render (float* outL, float* outR, int startSample, int numSamples, c
         const float oscMod = l1Mod * lfo1PitchSt + e1 * env1PitchSt;
         const float perfMod = perfPitch + l2 * lfo2PitchSt;
         const double base = currentPitch + (double) ctx.layerPitchOffset + (double) ribbon + (double) channelTuning
-                          + (double) (twinSign * p.binauralDetune * 0.01f);
+                          + (double) (twinSign * p.binauralDetune * 0.01f) + (double) unisonDetune;
 
         double pitch1 = base + range1 + drift1 + (toDds1 ? oscMod : 0.0f) + (perfToDds1 ? perfMod : 0.0f);
         double pitch2 = base + range2 + sTune.next (effective.dds2Tune, smooth) + drift2 + (toDds2 ? oscMod : 0.0f) + (perfToDds2 ? perfMod : 0.0f);
@@ -606,8 +639,14 @@ void Voice::render (float* outL, float* outR, int startSample, int numSamples, c
         const float lpfBase = sLpf.next (effective.lpfHz, smooth);
         const float hpfBase = sHpf.next (hpfHz, smooth);
         filter.setParameters (hpfBase * fastExp2 (driftCut), openLadderCutoff (lpfBase * fastExp2 (octaves)),
-                              sRes.next (res, smooth), p.drive);
-        const float filtered = filter.process (osc);
+                              sRes.next (res, smooth), p.drive, p.vcfType);
+        float filtered = filter.process (osc);
+        if (! std::isfinite (filtered))
+        {
+            // Never let a numerical blow-up reach the FX feedback loops (it would silence the layer).
+            filter.reset();
+            filtered = 0.0f;
+        }
 
         // ---- VCA -------------------------------------------------------------
         // [ASSUMPTION] LFO/DDS2/LFO2 amounts act as multiplicative CV on the envelope level.

@@ -18,12 +18,16 @@ void addNaturalEdges (BlepDelayLine& blep, Dds2Wave wave, double start, double l
 
         case Dds2Wave::square:
         case Dds2Wave::pulse:
+        {
+            // The plateaus droop, so each edge is a little smaller than 2.
+            const float edgeJump = 2.0f - (float) WaveBank::kSquareDroop;
             if (end >= 1.0)
-                blep.addStep (2.0f, since (1.0));
+                blep.addStep (edgeJump, since (1.0));
             for (double edge : { (double) pw, 1.0 + (double) pw })
                 if (start < edge && end >= edge)
-                    blep.addStep (-2.0f, since (edge));
+                    blep.addStep (-edgeJump, since (edge));
             break;
+        }
 
         case Dds2Wave::sine:
         case Dds2Wave::triangle:
@@ -35,13 +39,20 @@ void addNaturalEdges (BlepDelayLine& blep, Dds2Wave wave, double start, double l
 
 float Dds2::naive (Dds2Wave wave, double p, float pulseWidth) noexcept
 {
+    // Same analog-style shapes as the DDS1 tables: convex saw ramp, drooping plateaus, rounded triangle.
+    auto drooping = [] (double phase, double width)
+    {
+        const double droop = WaveBank::kSquareDroop;
+        return (float) (phase < width ? 1.0 - droop * phase / width : -1.0 + droop * (phase - width) / (1.0 - width));
+    };
     switch (wave)
     {
         case Dds2Wave::sine:     return (float) std::sin (juce::MathConstants<double>::twoPi * p);
-        case Dds2Wave::saw:      return (float) (2.0 * p - 1.0);
-        case Dds2Wave::square:   return p < 0.5 ? 1.0f : -1.0f;
-        case Dds2Wave::pulse:    return p < (double) pulseWidth ? 1.0f : -1.0f;
-        case Dds2Wave::triangle: return (float) (p < 0.25 ? 4.0 * p : p < 0.75 ? 2.0 - 4.0 * p : 4.0 * p - 4.0);
+        case Dds2Wave::saw:      return (float) (2.0 * WaveBank::analogRamp (p) - 1.0);
+        case Dds2Wave::square:   return drooping (p, 0.5);
+        case Dds2Wave::pulse:    return drooping (p, (double) pulseWidth);
+        case Dds2Wave::triangle:
+            return (float) WaveBank::roundTriangle (p < 0.25 ? 4.0 * p : p < 0.75 ? 2.0 - 4.0 * p : 4.0 * p - 4.0);
         case Dds2Wave::noise:    return 0.0f;
     }
     return 0.0f;

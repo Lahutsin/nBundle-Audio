@@ -49,15 +49,18 @@ public:
         float pitchOffset { 0.0f };   // unison octave/fifth stacking
         Side side { Side::mono };
         float pan { 0.0f };           // -1..1, only for Side::mono
+        float width { 1.0f };         // left/right voices: 1 = hard left/right, 0 = centred
         double lfo1Phase { -1.0 };    // < 0: keep the free-running phase
         double lfo2Phase { 0.0 };     // layer LFO2 phase => voices start in sync
         bool retrigger { true };      // false: legato (no envelope retrigger)
         uint64_t age { 0 };
         float twinSign { 0.0f };      // binaural x2: -1 / +1 x BINAURAL DETUNE
+        float detuneSemitones { 0.0f }; // unison spread of this stacked voice
         float gain { 1.0f };
     };
 
-    static constexpr float kOutputGain = 0.2f;
+    // One full-level voice peaks around -5 dBFS; stacked chords are caught by the output limiter.
+    static constexpr float kOutputGain = 0.6f;
 
     void prepare (double internalSampleRate, const WaveBank* bank, uint32_t seed);
     void setSampleRate (double internalSampleRate);
@@ -76,6 +79,7 @@ public:
 
     bool isActive() const noexcept { return active; }
     bool isGateOn() const noexcept { return active && gate; }
+    bool isAudible() const noexcept;
     int getNote() const noexcept { return note; }
     int getMidiChannel() const noexcept { return midiChannel; }
     uint64_t getAge() const noexcept { return age; }
@@ -111,7 +115,7 @@ public:
 private:
     void applyEnvelopeSettings (const LayerSnapshot& p) noexcept;
     void triggerEnvelopes() noexcept;
-    float lfo1RateHz (const LayerSnapshot& p, const VoiceContext& ctx) const noexcept;
+    float lfo1RateHz (const LayerSnapshot& p, float rateFader, const VoiceContext& ctx) const noexcept;
     float driftWalk (float& value, float& target, int& counter) noexcept;
     float openLadderCutoff (float hz) noexcept;
 
@@ -133,7 +137,7 @@ private:
     float channelPressure { 0.0f }, midiTimbre { 0.0f };
     bool isMpeMember { false };
     float pitchOffset { 0.0f };
-    float twinSign { 0.0f }, voiceGain { 1.0f };
+    float twinSign { 0.0f }, voiceGain { 1.0f }, unisonDetune { 0.0f };
     // double: per-sample glide steps (~1e-5 st) would be distorted by float rounding.
     double currentPitch { 60.0 }, targetPitch { 60.0 };
     bool hasPlayed { false };

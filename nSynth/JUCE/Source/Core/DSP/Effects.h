@@ -141,6 +141,23 @@ private:
     float smoothedMix { -1.0f }, smoothedSize { -1.0f }, smoothedPreDelay { -1.0f };
 };
 
+// Stereo-linked safety limiter for the main output. Transparent below the ceiling; above it the
+// gain drops instantly and recovers smoothly, so stacked chords never hard-clip the host bus.
+class OutputLimiter
+{
+public:
+    static constexpr float kCeiling = 0.966f;       // -0.3 dBFS
+    static constexpr double kReleaseSeconds = 0.12;
+
+    void prepare (double sampleRate);
+    void reset() noexcept { gain = 1.0f; }
+    void process (float* left, float* right, int num) noexcept;
+    float getGain() const noexcept { return gain; }
+
+private:
+    float gain { 1.0f }, releaseCoef { 0.0f };
+};
+
 // Fixed gentle high-shelf ("air") that gives the layer output a brighter, more open top end.
 class AirShelf
 {

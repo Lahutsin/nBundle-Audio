@@ -10,6 +10,18 @@ float Dds1::coreOffset (int core) noexcept
     return offsets[core];
 }
 
+float Dds1::superDetuneCurve (float knob) noexcept
+{
+    static constexpr double c[] = { 10028.7312891634, -50818.8652045924, 111363.4808729368, -138150.6761080548,
+                                    106649.6679158292, -53046.9642751875, 17019.9518580080, -3425.0836591318,
+                                    404.2703938388, -24.1878824391, 0.6717417634, 0.0030115596 };
+    const double x = juce::jlimit (0.0, 1.0, (double) knob);
+    double y = 0.0;
+    for (double coefficient : c)
+        y = y * x + coefficient;
+    return knob <= 0.0f ? 0.0f : (float) juce::jlimit (0.0, 1.0, y);
+}
+
 void Dds1::coreGains (SuperMode mode, float& centroidGain, float& sisterGain) noexcept
 {
     if (mode == SuperMode::off)
@@ -19,7 +31,7 @@ void Dds1::coreGains (SuperMode mode, float& centroidGain, float& sisterGain) no
         return;
     }
 
-    // [ASSUMPTION] "half depth" = sister mix 0.5, "on" = 1.0 using the supersaw mix curves,
+    // JP-8000 super saw mix curves (centre and side levels) at mix 0.5 ("1/2") and 1.0 ("On"),
     // then RMS-normalised so the level into the filter stays comparable.
     const float x = mode == SuperMode::half ? 0.5f : 1.0f;
     const float c = -0.55366f * x + 0.99785f;
@@ -72,7 +84,7 @@ float Dds1::process (double frequencyHz, const Settings& s, juce::Random& noise,
     centroidWrap = {};
 
     const double centreInc = frequencyHz / sampleRate;
-    const float spread = s.detune * s.detune;
+    const float spread = superDetuneCurve (s.detune);
     float centroidGain = 1.0f, sisterGain = 0.0f;
     coreGains (s.superMode, centroidGain, sisterGain);
 

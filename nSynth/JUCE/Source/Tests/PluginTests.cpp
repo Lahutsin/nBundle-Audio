@@ -149,8 +149,14 @@ public:
             expect (p.loadPatch (Layer::upper, file, &error), error);
             expect (! p.isPatchDirty (Layer::upper));
             expectWithinAbsoluteError (state.getRawParameterValue (cutoffId)->load(), 812.0f, 0.5f);
-            expect (! p.loadPatch (Layer::lower, file, &error));
             expectEquals (p.getPatchName (Layer::upper), file.getFileNameWithoutExtension());
+            // Patches are layer independent: the UPPER patch loads into LOWER as well.
+            setParam (state, layerParamId (Layer::lower, pid::lpf), 3000.0f);
+            expect (p.loadPatch (Layer::lower, file, &error), error);
+            expectWithinAbsoluteError (state.getRawParameterValue (layerParamId (Layer::lower, pid::lpf))->load(), 812.0f, 0.5f);
+            expectWithinAbsoluteError (p.getEngine().modMatrix (Layer::lower).getFixedAmount (ModSource::ribbon, ModTarget::waveMod),
+                                       0.3f, 1.0e-7f);
+            expect (! p.isPatchDirty (Layer::lower));
             file.deleteFile();
         }
 
@@ -305,12 +311,12 @@ public:
                 expect (ms != nullptr && division != nullptr && fixed != nullptr && curve != nullptr);
                 expect (ms->getBounds() == division->getBounds() && fixed->getBounds() == curve->getBounds());
                 expect (division->isVisible() && ! ms->isVisible());      // SYNC is the default
-                expect (curve->isVisible() && ! fixed->isVisible());      // DYNAMIC is the default
+                expect (fixed->isVisible() && ! curve->isVisible());      // STATIC is the default
                 setParam (p.getState(), layerParamId (layer, pid::delaySync), 0.0f);
-                setParam (p.getState(), layerParamId (layer, pid::velMode), (float) toInt (VelocityMode::fixed));
+                setParam (p.getState(), layerParamId (layer, pid::velMode), (float) toInt (VelocityMode::dynamic));
                 ed->updateSwitchedControls();
                 expect (ms->isVisible() && ! division->isVisible());
-                expect (fixed->isVisible() && ! curve->isVisible());
+                expect (curve->isVisible() && ! fixed->isVisible());
             }
 
             for (float s : { 0.5f, 0.75f, 1.0f, 1.5f, 2.0f })
@@ -334,6 +340,65 @@ public:
                                        (double) NSynthAudioProcessor::kDesignWidth / (double) NSynthAudioProcessor::kDesignHeight, 1.0e-9);
             expectEquals (c->getMinimumWidth(), NSynthAudioProcessor::kDesignWidth / 2);
             expectEquals (c->getMaximumWidth(), NSynthAudioProcessor::kDesignWidth * 2);
+            ed.reset();
+        }
+
+        beginTest ("preset browser: opens from the preset display, filters, auditions, steps and keeps favourites");
+        {
+            NSynthAudioProcessor p;
+            std::unique_ptr<NSynthAudioProcessorEditor> ed (dynamic_cast<NSynthAudioProcessorEditor*> (p.createEditor()));
+            auto& browser = ed->getPresetBrowser();
+            expect (! browser.isOpen());
+            ed->getPresetDisplay().onClick();
+            expect (browser.isOpen());
+            expect (browser.getKind() == nSynth::PresetKind::patch);
+
+            browser.setCategory ({});
+            expectGreaterOrEqual (browser.getNumVisiblePresets(), 112);
+            browser.setCategory ("Bass");
+            expectEquals (browser.getNumVisiblePresets(), 16);
+            for (int row = 0; row < browser.getNumVisiblePresets(); ++row)
+                expectEquals (browser.getVisiblePreset (row)->category, juce::String ("Bass"));
+
+            // A click on a row loads it into the target layer immediately.
+            browser.setTargetLayer (Layer::lower);
+            expect (browser.loadRow (2, false));
+            const auto* third = browser.getVisiblePreset (2);
+            expectEquals (p.getPatchKey (Layer::lower), third->key());
+            expectEquals (p.getPatchName (Layer::lower), third->name);
+            browser.step (1);
+            expectEquals (p.getPatchKey (Layer::lower), browser.getVisiblePreset (3)->key());
+            browser.step (-2);
+            expectEquals (p.getPatchKey (Layer::lower), browser.getVisiblePreset (1)->key());
+
+            browser.setCategory ({});
+            browser.setSearchText ("glass");
+            expectGreaterThan (browser.getNumVisiblePresets(), 0);
+            for (int row = 0; row < browser.getNumVisiblePresets(); ++row)
+                expect (browser.getVisiblePreset (row)->name.containsIgnoreCase ("glass"));
+            browser.setSearchText ("no such preset at all");
+            expectEquals (browser.getNumVisiblePresets(), 0);
+            browser.setSearchText ({});
+
+            auto& library = p.getPresetLibrary();
+            const auto& entry = *browser.getVisiblePreset (0);
+            const bool wasFavourite = library.isFavourite (entry);
+            library.setFavourite (entry, true);
+            browser.setCategory (nSynth::PresetLibrary::favouritesCategory);
+            bool listed = false;
+            for (int row = 0; row < browser.getNumVisiblePresets(); ++row)
+                listed |= browser.getVisiblePreset (row)->key() == entry.key();
+            expect (listed);
+            library.setFavourite (entry, wasFavourite);
+
+            browser.setKind (nSynth::PresetKind::performance);
+            browser.setCategory ({});
+            expectGreaterOrEqual (browser.getNumVisiblePresets(), 16);
+            const auto firstPerformance = browser.getVisiblePreset (0)->name;
+            expect (browser.loadRow (0, true));
+            expect (! browser.isOpen());
+            expectEquals (p.getCurrentPresetName(), firstPerformance);
+            expectEquals (ed->getPresetDisplay().getPresetName(), firstPerformance);
             ed.reset();
         }
 

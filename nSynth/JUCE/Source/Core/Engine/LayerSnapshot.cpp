@@ -23,8 +23,8 @@ void LayerParamReader::read (LayerSnapshot& o) const noexcept
 
     o.dds1Wave = (Dds1Wave) e();
     o.dds1Range = (Dds1Range) e();
-    o.altA = e() - 1;
-    o.altB = e() - 1;
+    o.altA = e();
+    o.altB = e();
     o.dds2Wave = (Dds2Wave) e();
     o.dds2Range = (Dds2Range) e();
     o.dds2Tune = f();
@@ -46,6 +46,7 @@ void LayerParamReader::read (LayerSnapshot& o) const noexcept
     o.hpfHz = f();
     o.lpfHz = f();
     o.res = f();
+    o.vcfType = (FilterType) e();
     o.drive = (Drive) e();
     o.vcfEnv = f();
     o.vcfEnvSource = (EnvSource) e();
@@ -98,6 +99,7 @@ void LayerParamReader::read (LayerSnapshot& o) const noexcept
     o.unisonSize = (UnisonSize) e();
     o.binaural = (BinauralMode) e();
     o.binauralDetune = f();
+    o.stereoWidth = f();
     o.hold = b();
     o.velMode = (VelocityMode) e();
     o.velFixed = e();

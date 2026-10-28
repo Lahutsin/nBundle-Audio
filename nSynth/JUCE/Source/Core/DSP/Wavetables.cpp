@@ -107,58 +107,77 @@ float MipWavetable::read (int level, double phase) const noexcept
 }
 
 //==============================================================================
-std::vector<std::complex<float>> WaveBank::classicHarmonics (int index)
+const juce::StringArray& WaveBank::altWaveNames()
 {
-    std::vector<std::complex<float>> h ((size_t) (N / 2), { 0.0f, 0.0f });
-    const float pi = juce::MathConstants<float>::pi;
+    static const juce::StringArray names {
+        // 1-8: Yamaha 4-op FM waveforms (TX81Z / OPL family)
+        "TX Sine", "TX Half Sine", "TX Abs Sine", "TX Quarter Sine", "TX Alt Sine", "TX Camel Sine", "TX Square", "TX Log Saw",
+        // 9-16: Casio CZ phase distortion
+        "CZ Saw", "CZ Square", "CZ Pulse", "CZ Double Sine", "CZ Saw Pulse", "CZ Reso Saw", "CZ Reso Tri", "CZ Reso Trap",
+        // 17-29: Korg DW-8000 style digital waveform spectra
+        "DW Piano", "DW E.Piano", "DW Hard EP", "DW Clavi", "DW Organ", "DW Brass", "DW Sax", "DW Strings",
+        "DW Guitar", "DW E.Guitar", "DW Bass", "DW Digi Bass", "DW Bell",
+        // 30-32: PPG Wave style
+        "PPG Vocal A", "PPG Vocal O", "PPG Digital"
+    };
+    return names;
+}
 
-    for (int k = 1; k < N / 2; ++k)
+std::vector<float> WaveBank::makeClassicCycle (int index)
+{
+    // Analog-modelled single cycles, built through the FFT so every mip level stays band-limited.
+    std::vector<float> c ((size_t) N);
+    const double twoPi = juce::MathConstants<double>::twoPi;
+    for (int n = 0; n < N; ++n)
     {
-        const auto kf = (float) k;
+        const double p = (double) n / (double) N;
+        double v = 0.0;
         switch (index)
         {
-            case 0: if (k == 1) h[1] = { 0.0f, 1.0f }; break;                      // sine
-            case 1: h[(size_t) k] = { 0.0f, -2.0f / (pi * kf) }; break;            // rising saw 2p-1
-            case 2: if (k % 2 == 1) h[(size_t) k] = { 0.0f, 4.0f / (pi * kf) }; break;  // square, +1 first half
-            case 3:                                                                 // triangle, 0 -> +1 -> -1 -> 0
-                if (k % 2 == 1)
-                {
-                    const float sign = ((k - 1) / 2) % 2 == 0 ? 1.0f : -1.0f;
-                    h[(size_t) k] = { 0.0f, sign * 8.0f / (pi * pi * kf * kf) };
-                }
+            case 0: v = std::sin (twoPi * p); break;                               // pure sine (FM reference)
+            case 1: v = 2.0 * analogRamp (p) - 1.0; break;                         // Minimoog-style saw
+            case 2:                                                                 // Prophet-style square with droop
+                v = p < 0.5 ? 1.0 - kSquareDroop * (p / 0.5) : -1.0 + kSquareDroop * ((p - 0.5) / 0.5);
                 break;
+            case 3:                                                                 // Moog-style triangle, rounded tips
+            {
+                const double t = p < 0.25 ? 4.0 * p : p < 0.75 ? 2.0 - 4.0 * p : 4.0 * p - 4.0;
+                v = roundTriangle (t);
+                break;
+            }
             default: break;
         }
+        c[(size_t) n] = (float) v;
     }
-    return h;
+    return c;
 }
 
 std::vector<float> WaveBank::makeFactoryAltCycle (int index)
 {
     std::vector<float> c ((size_t) N);
     const double twoPi = juce::MathConstants<double>::twoPi;
-    juce::Random rng (0x5eed + index);
-    std::vector<double> randomAmps (129);
-    for (auto& a : randomAmps)
-        a = rng.nextDouble();
+    const double pi = juce::MathConstants<double>::pi;
 
-    auto harmonicSum = [&] (double p, int count, auto&& amp)
+    // Additive spectrum with sine phases.
+    auto additive = [&] (double p, int count, auto&& amp)
     {
-        double s = 0.0;
+        double sum = 0.0;
         for (int k = 1; k <= count; ++k)
-            s += amp (k) * std::sin (twoPi * k * p);
-        return s;
+            sum += amp (k) * std::sin (twoPi * k * p);
+        return sum;
     };
-
-    auto formant = [&] (double p, double f1, double f2)
+    auto peakAt = [] (double k, double centre, double width) { return std::exp (-0.5 * std::pow ((k - centre) / width, 2.0)); };
+    // Casio CZ phase distortion: a cosine read through a bent phase.
+    auto pdSaw = [] (double p, double knee) { return p < knee ? 0.5 * p / knee : 0.5 + 0.5 * (p - knee) / (1.0 - knee); };
+    auto pdSquare = [] (double p, double knee)
     {
-        return harmonicSum (p, 64, [&] (int k)
-        {
-            const double g1 = std::exp (-0.5 * std::pow ((k - f1) / 1.5, 2.0));
-            const double g2 = 0.6 * std::exp (-0.5 * std::pow ((k - f2) / 2.5, 2.0));
-            return (g1 + g2 + 0.05) / std::sqrt ((double) k);
-        });
+        if (p < knee)        return 0.5 * p / knee;
+        if (p < 0.5)         return 0.5;
+        if (p < 0.5 + knee)  return 0.5 + 0.5 * (p - 0.5) / knee;
+        return 1.0;
     };
+    // CZ resonance waves: a cosine at the resonance frequency inside a window that restarts every cycle.
+    auto reso = [&] (double p, double window) { return 1.0 - window * (1.0 - std::cos (twoPi * 6.0 * p)); };
 
     for (int n = 0; n < N; ++n)
     {
@@ -168,38 +187,45 @@ std::vector<float> WaveBank::makeFactoryAltCycle (int index)
 
         switch (index)
         {
-            case 0:  v = p < 0.25 ? 1.0 : -1.0; break;
-            case 1:  v = p < 0.125 ? 1.0 : -1.0; break;
-            case 2:  v = p < 0.06 ? 1.0 : -1.0; break;
-            case 3:  v = 2.0 * std::abs (std::sin (juce::MathConstants<double>::pi * p)) - 1.0; break;
-            case 4:  v = s + 0.6 * std::sin (2 * twoPi * p) + 0.4 * std::sin (3 * twoPi * p); break;
-            case 5:  v = harmonicSum (p, 8, [] (int k) { return (k == 1 || k == 2 || k == 3 || k == 4 || k == 6 || k == 8) ? 1.0 : 0.0; }); break;
-            case 6:  v = formant (p, 7.0, 12.0); break;
-            case 7:  v = formant (p, 3.0, 8.0); break;
-            case 8:  v = formant (p, 3.0, 25.0); break;
-            case 9:  v = harmonicSum (p, 16, [] (int k) { return k == 1 ? 1.0 : k == 4 ? 0.7 : k == 7 ? 0.5 : k == 11 ? 0.4 : k == 16 ? 0.25 : 0.0; }); break;
-            case 10: v = harmonicSum (p, 7, [] (int k) { return k % 2 == 1 ? 1.0 : 0.0; }); break;
-            case 11: v = harmonicSum (p, 64, [] (int k) { return 1.0 / std::pow ((double) k, 0.3); }); break;
-            case 12: v = 2.0 * std::fmod (1.5 * p, 1.0) - 1.0; break;
-            case 13: v = 2.0 * std::fmod (2.5 * p, 1.0) - 1.0; break;
-            case 14: v = 2.0 * std::fmod (3.7 * p, 1.0) - 1.0; break;
-            case 15: v = std::sin (twoPi * p + 2.0 * s); break;
-            case 16: v = std::sin (twoPi * p + 3.0 * std::sin (2 * twoPi * p)); break;
-            case 17: v = std::sin (twoPi * p + 1.5 * std::sin (3 * twoPi * p)); break;
-            case 18: v = std::sin (2 * twoPi * p + 2.0 * s); break;
-            case 19: v = std::sin (juce::MathConstants<double>::pi * 1.5 * s); break;
-            case 20: v = std::sin (juce::MathConstants<double>::pi * 3.0 * s); break;
-            case 21: v = std::tanh (4.0 * s); break;
-            case 22: v = (s >= 0 ? 1.0 : -1.0) * std::pow (std::abs (s), 0.3); break;
-            case 23: v = std::pow (s, 5.0); break;
-            case 24: v = std::floor (4.0 * p) / 3.0 * 2.0 - 1.0; break;
-            case 25: v = std::floor (8.0 * p) / 7.0 * 2.0 - 1.0; break;
-            case 26: v = std::round (s * 3.5) / 3.5; break;
-            case 27: v = std::pow (2.0 * p - 1.0, 2.0) * 2.0 - 1.0; break;
-            case 28: v = (2.0 * p - 1.0) + 0.5 * s; break;
-            case 29: v = p < 0.8 ? (2.0 * p / 0.8 - 1.0) : (1.0 - 2.0 * (p - 0.8) / 0.2); break;
-            case 30: v = harmonicSum (p, 32, [&] (int k) { return randomAmps[(size_t) k] / k; }); break;
-            default: v = harmonicSum (p, 128, [&] (int k) { return randomAmps[(size_t) k] / std::sqrt ((double) k); }); break;
+            // ---- Yamaha 4-op FM waveforms
+            case 0:  v = s; break;
+            case 1:  v = p < 0.5 ? s : 0.0; break;
+            case 2:  v = std::abs (s); break;
+            case 3:  v = std::fmod (p, 0.5) < 0.25 ? std::abs (s) : 0.0; break;
+            case 4:  v = p < 0.5 ? std::sin (2.0 * twoPi * p) : 0.0; break;
+            case 5:  v = p < 0.5 ? std::abs (std::sin (2.0 * twoPi * p)) : 0.0; break;
+            case 6:  v = p < 0.5 ? 1.0 : -1.0; break;
+            case 7:  v = p < 0.5 ? std::exp (-16.0 * p) : -std::exp (-16.0 * (1.0 - p)); break;
+
+            // ---- Casio CZ phase distortion
+            case 8:  v = std::cos (twoPi * pdSaw (p, 0.06)); break;
+            case 9:  v = std::cos (twoPi * pdSquare (p, 0.06)); break;
+            case 10: v = std::cos (twoPi * juce::jmin (1.0, p / 0.18)); break;
+            case 11: v = p < 0.5 ? std::cos (2.0 * twoPi * p) : std::cos (twoPi * (p - 0.5)); break;
+            case 12: v = p < 0.5 ? std::cos (twoPi * pdSaw (2.0 * p, 0.12)) : 1.0; break;
+            case 13: v = reso (p, 1.0 - p); break;
+            case 14: v = reso (p, 1.0 - std::abs (2.0 * p - 1.0)); break;
+            case 15: v = reso (p, juce::jmin (1.0, 4.0 * juce::jmin (p, 1.0 - p))); break;
+
+            // ---- Korg DW-8000 style spectra
+            case 16: v = additive (p, 64, [&] (int k) { return std::pow ((double) k, -0.9) * (k % 7 == 0 ? 0.25 : 1.0); }); break;
+            case 17: v = additive (p, 32, [&] (int k) { return (k == 1 ? 1.0 : 0.3 / (k * k)) + 0.12 * peakAt (k, 8.0, 1.0); }); break;
+            case 18: v = additive (p, 48, [&] (int k) { return std::pow ((double) k, -1.2) * (1.0 + 1.5 * peakAt (k, 3.0, 0.5) + 2.0 * peakAt (k, 10.0, 1.5)); }); break;
+            case 19: v = p < 0.12 ? 1.0 : -0.14; break;
+            case 20: v = additive (p, 8, [] (int k) { static const double bars[] = { 0, 1.0, 1.0, 0.8, 0.6, 0, 0.5, 0, 0.4 }; return bars[k]; }); break;
+            case 21: v = additive (p, 64, [&] (int k) { return (1.0 / k) * (1.0 + 2.0 * peakAt (k, 5.0, 2.5)); }); break;
+            case 22: v = additive (p, 64, [&] (int k) { return (k % 2 == 1 ? 1.0 : 0.4) / k * (1.0 + 1.5 * peakAt (k, 3.0, 1.0) + 1.2 * peakAt (k, 9.0, 2.0)); }); break;
+            case 23: v = additive (p, 64, [&] (int k) { return (1.0 / k) * (1.0 + 1.6 * peakAt (k, 4.0, 1.2) + 1.4 * peakAt (k, 11.0, 2.5)) * (1.0 - 0.6 * peakAt (k, 7.0, 0.8)); }); break;
+            case 24: v = additive (p, 64, [&] (int k) { return std::abs (std::sin (pi * k * 0.18)) / std::pow ((double) k, 1.3); }); break;
+            case 25: v = std::tanh (4.0 * s + 0.6 * std::sin (2.0 * twoPi * p)); break;
+            case 26: v = additive (p, 32, [] (int k) { static const double low[] = { 0, 1.0, 0.6, 0.25, 0.15, 0.08 }; return k <= 5 ? low[k] : 0.5 / ((double) k * k * k); }); break;
+            case 27: v = additive (p, 15, [] (int k) { return k == 2 ? 0.5 : (k % 2 == 1 ? 1.0 / k : 0.0); }); break;
+            case 28: v = additive (p, 16, [] (int k) { return k == 1 ? 1.0 : k == 4 ? 0.7 : k == 7 ? 0.5 : k == 11 ? 0.4 : k == 16 ? 0.25 : 0.0; }); break;
+
+            // ---- PPG Wave style
+            case 29: v = additive (p, 48, [&] (int k) { return (peakAt (k, 6.5, 1.5) + 0.7 * peakAt (k, 10.0, 2.0) + 0.04) / std::sqrt ((double) k); }); break;
+            case 30: v = additive (p, 48, [&] (int k) { return (peakAt (k, 4.0, 1.2) + 0.6 * peakAt (k, 7.0, 1.5) + 0.04) / std::sqrt ((double) k); }); break;
+            default: v = std::floor (16.0 * p) / 15.0 * 2.0 - 1.0; break;
         }
         c[(size_t) n] = (float) v;
     }
@@ -209,7 +235,10 @@ std::vector<float> WaveBank::makeFactoryAltCycle (int index)
 WaveBank::WaveBank()
 {
     for (int i = 0; i < 4; ++i)
-        classicTables[(size_t) i].buildFromHarmonics (classicHarmonics (i), false);
+    {
+        const auto cycle = makeClassicCycle (i);
+        classicTables[(size_t) i].buildFromCycle (cycle.data(), MipWavetable::kTableSize / 2 - 1, false);
+    }
 
     for (int i = 0; i < kNumAltWaves; ++i)
     {

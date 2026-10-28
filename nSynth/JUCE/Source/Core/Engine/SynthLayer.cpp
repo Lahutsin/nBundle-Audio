@@ -163,6 +163,25 @@ void SynthLayer::finishBlock (juce::AudioBuffer<float>& dest, int numHostSamples
     auto outBlock = hostBlock.getSubBlock (0, (size_t) numHostSamples);
     oversampler->processSamplesDown (outBlock);
 
+    // A non-finite sample would circulate forever in the chorus/delay/reverb feedback and
+    // silence the layer until reload: drop the block and restart the signal path cleanly.
+    bool finite = true;
+    for (int ch = 0; ch < 2 && finite; ++ch)
+    {
+        const float* d = hostScratch.getReadPointer (ch);
+        for (int i = 0; i < numHostSamples && finite; ++i)
+            finite = std::isfinite (d[i]);
+    }
+    if (! finite)
+    {
+        hostScratch.clear (0, numHostSamples);
+        oversampler->reset();
+        air.reset();
+        chorus.reset();
+        delay.reset();
+        reverb.reset();
+    }
+
     // Layer PAN as a stereo balance control.
     const float gl = juce::jmin (1.0f, 1.0f - snap.pan), gr = juce::jmin (1.0f, 1.0f + snap.pan);
     hostScratch.applyGain (0, 0, numHostSamples, gl);
@@ -333,6 +352,14 @@ void SynthLayer::startUnit (int unit, int note, float velocity, float pitchOffse
     info.age = age;
     info.lfo2Phase = lfo2MasterPhase;
 
+    // UNISON stacks are spread evenly over +/- 1.5 x DETUNE and scaled to about the level of a
+    // single voice (slightly above the power-preserving 1/sqrt(n), which the detune and stereo
+    // fan-out lose again), so stacking thickens the sound instead of just phasing and clipping.
+    const bool stacked = snap.unison && stackSize > 1;
+    const float stackPosition = stacked ? 2.0f * (float) stackIndex / (float) (stackSize - 1) - 1.0f : 0.0f;
+    const float stackGain = stacked ? std::pow ((float) stackSize, -0.4f) : 1.0f;
+    info.detuneSemitones = stackPosition * snap.binauralDetune * 0.015f;
+
     if (snap.binaural != BinauralMode::off)
     {
         // Voices per unit: [left, right] (x1) or [left a, right a, left b, right b] (x2).
@@ -340,7 +367,8 @@ void SynthLayer::startUnit (int unit, int note, float velocity, float pitchOffse
         // the ears, and scales them by 1/sqrt(2) so x1 and x2 play at the same loudness.
         const bool doubled = snap.binaural == BinauralMode::x2;
         static constexpr float twinSigns[] = { -1.0f, 1.0f, 1.0f, -1.0f };
-        info.gain = doubled ? juce::MathConstants<float>::sqrt2 * 0.5f : 1.0f;
+        info.gain = (doubled ? juce::MathConstants<float>::sqrt2 * 0.5f : 1.0f) * stackGain;
+        info.width = snap.stereoWidth;
         auto& left = unitVoice (unit, 0);
         const double leftPhase = lfo1Restarts ? 0.0 : -1.0;
         for (int pair = 0; pair < (doubled ? 2 : 1); ++pair)
@@ -360,10 +388,11 @@ void SynthLayer::startUnit (int unit, int note, float velocity, float pitchOffse
     }
 
     info.side = Voice::Side::mono;
+    info.gain = stackGain;
     if (isMono())
     {
-        // SOLO/LEGATO without binaural: no panning, SPREAD offsets the LFO1 phases.
-        info.pan = 0.0f;
+        // SOLO/LEGATO without binaural: unison stacks fan out over STEREO WIDTH, SPREAD offsets the LFO1 phases.
+        info.pan = stackPosition * snap.stereoWidth;
         const double offset = spread * (double) stackIndex / (double) juce::jmax (1, stackSize);
         if (lfo1Restarts)
             info.lfo1Phase = offset;
@@ -372,8 +401,8 @@ void SynthLayer::startUnit (int unit, int note, float velocity, float pitchOffse
     }
     else
     {
-        // POLY without binaural: voices alternately panned by SPREAD.
-        info.pan = (unit % 2 == 0 ? -spread : spread);
+        // POLY without binaural: voices alternately panned by SPREAD, unison stacks fan out over WIDTH.
+        info.pan = stacked ? stackPosition * snap.stereoWidth : (unit % 2 == 0 ? -spread : spread);
         info.lfo1Phase = lfo1Restarts ? 0.0 : -1.0;
     }
     unitVoice (unit, 0).start (info, snap);

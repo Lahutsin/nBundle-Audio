@@ -373,6 +373,43 @@ public:
             expectEquals (rig.voices (Layer::upper), 32);
         }
 
+        beginTest ("retriggering a sounding voice keeps the oscillator phase (no click)");
+        {
+            Rig rig;
+            rig.setLayer (Layer::upper, pid::binaural, 0.0f);
+            rig.setLayer (Layer::upper, pid::voiceMode, (float) toInt (VoiceMode::solo));
+            rig.setLayer (Layer::upper, pid::dds2Wave, (float) toInt (Dds2Wave::sine));
+            rig.setLayer (Layer::upper, pid::mix, 1.0f);
+            rig.setLayer (Layer::upper, pid::drift, 0.0f);
+            const int retriggerAt = 4801;
+            const auto out = rig.render (9600, { { 0, on (57) }, { retriggerAt, on (57) } });
+            float steady = 0.0f, atRetrigger = 0.0f;
+            for (int i = 2400; i < 4700; ++i)
+                steady = juce::jmax (steady, std::abs (out.l[(size_t) i] - out.l[(size_t) i - 1]));
+            for (int i = retriggerAt - 4; i < retriggerAt + 64; ++i)
+                atRetrigger = juce::jmax (atRetrigger, std::abs (out.l[(size_t) i] - out.l[(size_t) i - 1]));
+            expectGreaterThan (steady, 0.0f);
+            expectLessThan (atRetrigger, steady * 1.5f);
+        }
+
+        beginTest ("UNISON stacks are detuned and level-matched to a single voice");
+        {
+            auto render = [&] (bool unison)
+            {
+                Rig rig;
+                rig.setLayer (Layer::upper, pid::binaural, 0.0f);
+                rig.setLayer (Layer::upper, pid::voiceMode, (float) toInt (VoiceMode::solo));
+                rig.setLayer (Layer::upper, pid::unison, unison ? 1.0f : 0.0f);
+                rig.setLayer (Layer::upper, pid::unisonSize, (float) toInt (UnisonSize::half));
+                return rig.render (48000, chord ({ 57 }));
+            };
+            const auto single = render (false), stacked = render (true);
+            expect (allFinite (stacked.l));
+            // Uncorrelated, detuned voices add in power: a 1/sqrt(n) stack stays near the single-voice level.
+            expectWithinAbsoluteError (toDb (rms (stacked.l, 9600)), toDb (rms (single.l, 9600)), 3.0);
+            expectLessThan (peak (stacked.l), 1.0f);
+        }
+
         beginTest ("UNISON in POLY divides the stacked voices by the number of notes");
         {
             Rig rig;
@@ -566,3 +603,49 @@ public:
 };
 
 static EngineTests engineTests;
+
+// Random patches (every layer parameter random) must never produce NaN/Inf, and the layer must
+// recover: a second note after the random patch is replaced by a plain one is audible again.
+class RobustnessTests : public juce::UnitTest
+{
+public:
+    RobustnessTests() : juce::UnitTest ("Robustness", "nSynth") {}
+
+    void runTest() override
+    {
+        beginTest ("random patches stay finite and the signal path recovers");
+        juce::Random master (20261029);
+        for (int trial = 0; trial < 48; ++trial)
+        {
+            NSynthAudioProcessor p;
+            juce::Random rng (master.nextInt64());
+            for (auto& spec : getLayerParamSpecs())
+                p.getState().getParameter (layerParamId (Layer::upper, spec.suffix))->setValueNotifyingHost (rng.nextFloat());
+            // Keep the patch audible enough to be meaningful; FREEZE/HOLD would legitimately sustain.
+            setParam (p.getState(), layerParamId (Layer::upper, pid::delayFreeze), 0.0f);
+            setParam (p.getState(), layerParamId (Layer::upper, pid::hold), 0.0f);
+            p.setPlayConfigDetails (0, 2, 48000.0, 256);
+            p.prepareToPlay (48000.0, 256);
+
+            juce::AudioBuffer<float> b (2, 256);
+            bool finite = true;
+            for (int pos = 0; pos < 24000; pos += 256)
+            {
+                juce::MidiBuffer m;
+                if (pos == 0)
+                    for (int note : { 36, 60, 84 })
+                        m.addEvent (juce::MidiMessage::noteOn (1, note, (juce::uint8) (40 + rng.nextInt (88))), 0);
+                if (pos == 12032)
+                    for (int note : { 36, 60, 84 })
+                        m.addEvent (juce::MidiMessage::noteOff (1, note), 0);
+                p.processBlock (b, m);
+                for (int ch = 0; ch < 2; ++ch)
+                    for (int i = 0; i < 256; ++i)
+                        finite = finite && std::isfinite (b.getSample (ch, i));
+            }
+            expect (finite, "trial " + juce::String (trial));
+        }
+    }
+};
+
+static RobustnessTests robustnessTests;

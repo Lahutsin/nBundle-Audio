@@ -1,105 +1,106 @@
 <?xml version="1.0" encoding="UTF-8"?>
 
-<NSYNTH_PATCH layer="0" stateVersion="4" factoryContent="1">
-  <MOD_MATRIX schemaVersion="2" layer="0">
-    <ROUTE source="6" target="5" amount="0.119999997317791"/>
-  </MOD_MATRIX>
+<NSYNTH_PATCH layer="0" stateVersion="4" factoryContent="1" name="Golden Fanfare"
+              category="Brass &amp; Strings">
+  <MOD_MATRIX schemaVersion="2" layer="0"/>
   <PARAM id="up_dds1_wave" value="0.2000000029802322"/>
   <PARAM id="up_dds1_range" value="0.6000000238418579"/>
   <PARAM id="up_dds1_alt_a" value="0.0"/>
   <PARAM id="up_dds1_alt_b" value="0.03225806355476379"/>
-  <PARAM id="up_dds2_wave" value="0.4000000059604645"/>
+  <PARAM id="up_dds2_wave" value="0.2000000029802322"/>
   <PARAM id="up_dds2_range" value="0.6000000238418579"/>
-  <PARAM id="up_dds2_tune" value="0.4942857325077057"/>
+  <PARAM id="up_dds2_tune" value="0.5"/>
   <PARAM id="up_dds2_mode" value="0.0"/>
-  <PARAM id="up_mix" value="0.3320000171661377"/>
+  <PARAM id="up_mix" value="0.0"/>
   <PARAM id="up_pan" value="0.5"/>
-  <PARAM id="up_mod_lfo1" value="0.0"/>
+  <PARAM id="up_mod_lfo1" value="0.05000000074505806"/>
   <PARAM id="up_mod_env1" value="0.0"/>
   <PARAM id="up_mod_dest" value="0.5"/>
-  <PARAM id="up_super_mode" value="0.0"/>
-  <PARAM id="up_pw_detune" value="0.0"/>
+  <PARAM id="up_super_mode" value="0.5"/>
+  <PARAM id="up_pw_detune" value="0.1800000071525574"/>
   <PARAM id="up_pwm_wave" value="0.0"/>
   <PARAM id="up_pwm_src" value="0.0"/>
   <PARAM id="up_cross_mod" value="0.0"/>
-  <PARAM id="up_drift" value="0.0"/>
-  <PARAM id="up_hpf" value="0.0"/>
-  <PARAM id="up_lpf" value="0.765821635723114"/>
-  <PARAM id="up_res" value="0.1319999992847443"/>
-  <PARAM id="up_vcf_drive" value="0.0"/>
-  <PARAM id="up_vcf_env" value="0.2199999988079071"/>
+  <PARAM id="up_drift" value="0.25"/>
+  <PARAM id="up_hpf" value="0.3843109011650085"/>
+  <PARAM id="up_lpf" value="0.578953742980957"/>
+  <PARAM id="up_res" value="0.05000000074505806"/>
+  <PARAM id="up_vcf_type" value="0.0"/>
+  <PARAM id="up_vcf_drive" value="0.5"/>
+  <PARAM id="up_vcf_env" value="0.5"/>
   <PARAM id="up_vcf_env_src" value="0.0"/>
   <PARAM id="up_vcf_lfo1" value="0.0"/>
   <PARAM id="up_vcf_dds2" value="0.0"/>
-  <PARAM id="up_vcf_keytrack" value="0.0"/>
-  <PARAM id="up_vca_env" value="1.0"/>
+  <PARAM id="up_vcf_keytrack" value="0.5"/>
+  <PARAM id="up_vca_env" value="0.1172645688056946"/>
   <PARAM id="up_vca_lfo1" value="0.0"/>
   <PARAM id="up_vca_dds2" value="0.0"/>
   <PARAM id="up_vca_env_mode" value="0.0"/>
   <PARAM id="up_env1_ahold" value="0.0"/>
-  <PARAM id="up_env1_attack" value="0.0"/>
+  <PARAM id="up_env1_attack" value="0.4005149304866791"/>
   <PARAM id="up_env1_dhold" value="0.0"/>
-  <PARAM id="up_env1_decay" value="0.6747425198554993"/>
-  <PARAM id="up_env1_sustain" value="0.5"/>
-  <PARAM id="up_env1_release" value="0.6192803382873535"/>
+  <PARAM id="up_env1_decay" value="0.6360169649124146"/>
+  <PARAM id="up_env1_sustain" value="0.4000000059604645"/>
+  <PARAM id="up_env1_release" value="0.75"/>
   <PARAM id="up_env1_mode" value="0.0"/>
   <PARAM id="up_env1_keytrack" value="0.0"/>
-  <PARAM id="up_env2_attack" value="0.6377752423286438"/>
+  <PARAM id="up_env2_attack" value="0.3252574801445007"/>
   <PARAM id="up_env2_dhold" value="0.0"/>
-  <PARAM id="up_env2_decay" value="0.6747425198554993"/>
-  <PARAM id="up_env2_sustain" value="0.8200000524520874"/>
-  <PARAM id="up_env2_release" value="0.7801434993743896"/>
+  <PARAM id="up_env2_decay" value="0.6945378184318542"/>
+  <PARAM id="up_env2_sustain" value="0.800000011920929"/>
+  <PARAM id="up_env2_release" value="0.6192803382873535"/>
   <PARAM id="up_lfo1_wave" value="0.0"/>
-  <PARAM id="up_lfo1_rate" value="0.5"/>
-  <PARAM id="up_lfo1_delay" value="0.0"/>
-  <PARAM id="up_lfo1_lr_phase" value="0.4200000166893005"/>
+  <PARAM id="up_lfo1_rate" value="0.699999988079071"/>
+  <PARAM id="up_lfo1_delay" value="0.5532978177070618"/>
+  <PARAM id="up_lfo1_lr_phase" value="0.0"/>
   <PARAM id="up_lfo1_mode" value="0.0"/>
   <PARAM id="up_clk_sync" value="0.0"/>
   <PARAM id="up_lfo2_wave" value="0.0"/>
-  <PARAM id="up_lfo2_rate" value="0.5"/>
+  <PARAM id="up_lfo2_rate" value="0.699999988079071"/>
   <PARAM id="up_lfo2_delay" value="0.0"/>
   <PARAM id="up_lfo2_trigger" value="0.0"/>
   <PARAM id="up_lfo2_rate_mod" value="0.0"/>
-  <PARAM id="up_lfo2_dds" value="0.0"/>
+  <PARAM id="up_lfo2_dds" value="0.1000000014901161"/>
   <PARAM id="up_lfo2_vcf" value="0.0"/>
   <PARAM id="up_lfo2_vca" value="0.0"/>
   <PARAM id="up_perf_dest" value="0.5"/>
-  <PARAM id="up_bend_dds" value="0.5"/>
+  <PARAM id="up_bend_dds" value="0.1666666716337204"/>
   <PARAM id="up_bend_vcf" value="0.0"/>
   <PARAM id="up_portamento" value="0.0"/>
   <PARAM id="up_octave" value="0.5"/>
   <PARAM id="up_voice_mode" value="0.6666666865348816"/>
   <PARAM id="up_unison" value="0.0"/>
   <PARAM id="up_unison_size" value="0.3333333432674408"/>
-  <PARAM id="up_binaural" value="1.0"/>
-  <PARAM id="up_binaural_detune" value="0.3600000143051147"/>
+  <PARAM id="up_binaural" value="0.5"/>
+  <PARAM id="up_binaural_detune" value="0.3199999928474426"/>
+  <PARAM id="up_stereo_width" value="0.550000011920929"/>
   <PARAM id="up_hold" value="0.0"/>
-  <PARAM id="up_vel_mode" value="0.0"/>
+  <PARAM id="up_vel_mode" value="1.0"/>
   <PARAM id="up_vel_fixed" value="0.7857142686843872"/>
   <PARAM id="up_vel_curve" value="0.5"/>
-  <PARAM id="up_vca_dynamics" value="0.6000000238418579"/>
-  <PARAM id="up_chorus" value="0.3333333432674408"/>
-  <PARAM id="up_chorus_rate" value="0.4751878976821899"/>
+  <PARAM id="up_vca_dynamics" value="0.449999988079071"/>
+  <PARAM id="up_chorus" value="0.0"/>
+  <PARAM id="up_chorus_rate" value="0.4345879852771759"/>
   <PARAM id="up_chorus_depth" value="0.5"/>
   <PARAM id="up_chorus_delay" value="0.4181825220584869"/>
   <PARAM id="up_chorus_fb" value="0.0"/>
-  <PARAM id="up_chorus_width" value="1.0"/>
-  <PARAM id="up_chorus_mix" value="0.5"/>
+  <PARAM id="up_chorus_width" value="0.800000011920929"/>
+  <PARAM id="up_chorus_mix" value="0.300000011920929"/>
   <PARAM id="up_delay_sync" value="1.0"/>
   <PARAM id="up_delay_ms" value="0.7706891298294067"/>
-  <PARAM id="up_delay_div" value="0.625"/>
-  <PARAM id="up_delay_fb" value="0.3199999928474426"/>
-  <PARAM id="up_delay_mix" value="0.06599999964237213"/>
-  <PARAM id="up_delay_pingpong" value="1.0"/>
+  <PARAM id="up_delay_div" value="0.6875"/>
+  <PARAM id="up_delay_fb" value="0.3499999940395355"/>
+  <PARAM id="up_delay_mix" value="0.0"/>
+  <PARAM id="up_delay_pingpong" value="0.0"/>
   <PARAM id="up_delay_freeze" value="0.0"/>
-  <PARAM id="up_delay_lowcut" value="0.3890756368637085"/>
-  <PARAM id="up_delay_highcut" value="0.7334516048431396"/>
-  <PARAM id="up_reverb_mix" value="0.1200000047683716"/>
-  <PARAM id="up_reverb_size" value="0.5699999928474426"/>
-  <PARAM id="up_reverb_decay" value="0.504300057888031"/>
-  <PARAM id="up_reverb_predelay" value="0.2976996898651123"/>
-  <PARAM id="up_reverb_damp" value="0.7334516048431396"/>
-  <PARAM id="up_reverb_lowcut" value="0.5150539875030518"/>
-  <PARAM id="up_reverb_width" value="1.0"/>
-  <PARAM id="up_reverb_mod" value="0.300000011920929"/>
+  <PARAM id="up_delay_lowcut" value="0.4375306367874146"/>
+  <PARAM id="up_delay_highcut" value="0.6495607495307922"/>
+  <PARAM id="up_reverb_mix" value="0.25"/>
+  <PARAM id="up_reverb_size" value="0.800000011920929"/>
+  <PARAM id="up_reverb_decay" value="0.6215190291404724"/>
+  <PARAM id="up_reverb_predelay" value="0.3369663953781128"/>
+  <PARAM id="up_reverb_damp" value="0.6941346526145935"/>
+  <PARAM id="up_reverb_lowcut" value="0.5616593360900879"/>
+  <PARAM id="up_reverb_width" value="0.8500000238418579"/>
+  <PARAM id="up_reverb_mod" value="0.4000000059604645"/>
 </NSYNTH_PATCH>

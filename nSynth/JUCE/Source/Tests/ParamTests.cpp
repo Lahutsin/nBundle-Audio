@@ -11,7 +11,7 @@ public:
     void runTest() override
     {
         beginTest ("registry sizes are the documented ones");
-        expectEquals ((int) getLayerParamSpecs().size(), 98);
+        expectEquals ((int) getLayerParamSpecs().size(), 100);
         expectEquals ((int) getPerformanceParamSpecs().size(), 15);
 
         beginTest ("suffixes unique, every spec exists for both layers + performance in the APVTS");
@@ -28,7 +28,7 @@ public:
             }
             for (auto& spec : getPerformanceParamSpecs())
                 expect (s.getParameter (perfParamId (spec.suffix)) != nullptr, spec.suffix);
-            expectEquals (proc.getParameters().size(), 2 * 98 + 15);
+            expectEquals (proc.getParameters().size(), 2 * 100 + 15);
         }
 
         beginTest ("choice lists match the DSP enums");
@@ -74,12 +74,12 @@ public:
             expect (snap.superMode == SuperMode::off);
             expectWithinAbsoluteError (snap.lpfHz, 25000.0f, 1.0f); // filter open
             expectEquals (snap.res, 0.0f);
-            expectEquals (snap.vcaEnv, 1.0f);
+            expectEquals (snap.vcaEnv, 0.75f);
             expect (snap.vcaEnvMode == VcaEnvMode::env2);
             expectEquals (snap.env2Sustain, 1.0f);
             expect (snap.voiceMode == VoiceMode::poly1);   // default voice mode
             expect (snap.binaural == BinauralMode::x2);    // binaural x2 is the default
-            expect (snap.velMode == VelocityMode::dynamic);
+            expect (snap.velMode == VelocityMode::fixed);       // static velocity is the default
             expectEquals (snap.velFixed, 100);
             expect (snap.chorus == ChorusMode::off);      // effects start dry
             expectEquals (snap.delayMix, 0.0f);
