@@ -1,6 +1,6 @@
 # nSynth Build Guide
 
-This repository contains the JUCE version of **nSynth** — a 64-voice,
+This repository contains the JUCE version of **nSynth** — a 128-voice,
 bi-timbral hybrid digital/analog-modeled polyphonic synthesizer with
 binaural stereo voice pairing, dual-layer modulation, 32 custom wavetable
 slots, adjustable velocity, and studio effects (chorus, tempo-synced delay,
@@ -9,6 +9,12 @@ reverb).
 ![nSynth plugin UI](docs/Plugin.png)
 
 ![nSynth preset browser](docs/PresetBrowser.png)
+
+![nSynth mod matrix](docs/ModMatrix.png)
+
+![nSynth mod matrix, direct mapping](docs/ModMatrixDirect.png)
+
+![nSynth wave bank](docs/WaveBank.png)
 
 The full design plan, DSP specification, parameter registry, UI spec,
 preset-manager design and phased roadmap live in [docs/](./docs):
@@ -30,26 +36,26 @@ The synthesis core, dual-layer voice architecture, modulation matrix,
 wavetable system, MIDI/MPE engine, compact UI, multi-core scheduler, and
 factory content are implemented:
 
-- DDS1: 7-core JP-8000 style super saw (OFF / 1/2 / ON; Roland's detune response and
-  centre/side mix curves), analog-modelled shapes (Minimoog-style convex saw ramp,
-  Prophet-style square with plateau droop, rounded triangle, pure sine), noise, morphing,
-  32 named alternative waveforms (`.ws6` I/O): TX = Yamaha 4-op FM waves, CZ = Casio phase
-  distortion incl. the resonance waves, DW = Korg DW-8000 style spectra, PPG = vocal/digital.
+- DDS1: 7-core super saw (OFF / 1/2 / ON; measured detune response and centre/side mix
+  curves), analog-modelled shapes (slightly convex saw ramp, square with AC-coupled plateau
+  droop, rounded triangle, pure sine), noise, morphing, 32 named alternative waveforms
+  (`.ws6` I/O): FM = 4-operator FM waves, PD = phase distortion incl. the resonance waves,
+  DG = digital waveform spectra, WT = vocal/digital wavetable style.
 - DDS2: polyBLEP oscillator with the same analog shapes, NORM/RING/SYNC, LFO range, sub oscillator.
 - Cross mod (exponential FM), mixer, 1-pole HPF -> analog-modelled low-pass (VCF TYPE):
-  Moog 24 / Moog 12 (transistor ladder, tanh in every stage and at the input), Jupiter 24
-  (OTA cascade), SEM 12 (saturating state-variable filter). All zero-delay-feedback, drive
+  Ladder 24 / Ladder 12 (transistor ladder, tanh in every stage and at the input), Cascade 24
+  (OTA cascade), SVF 12 (saturating state-variable filter). All zero-delay-feedback, drive
   OFF/1/2, half the ladder's resonance bass loss made up at the input, self-oscillation;
   the fully open filter stays flat across the audible band. VCA with ENV2/fixed envelopes.
 - ENV1 (attack hold, decay hold, loop, inverted, keytrack), ENV2, per-voice LFO1
   (LR phase, HF modes) and LFO2 (trigger modes), drift.
-- 64-voice pool shared by UPPER/LOWER: Single/Dual/Split, Solo/Legato/Poly 1/Poly 2,
+- 128-voice pool shared by UPPER/LOWER: Single/Dual/Split, Solo/Legato/Poly 1/Poly 2,
   unison sizes (stacks spread over +/- 1.5 x DETUNE, level-matched to a single voice,
   fanned out over STEREO WIDTH), portamento, hold/sustain. A stolen voice that is still
   sounding keeps its oscillator phases, so voice stealing does not click.
-- Binaural Off / x1 / x2: x1 plays one voice per ear (32 stereo notes in Single),
-  x2 (default) a mirrored-detuned pair per ear, 4 voices per note (16 notes in Single,
-  8 per layer in Dual/Split), with adjustable BINAURAL DETUNE and STEREO WIDTH
+- Binaural Off / x1 / x2: x1 plays one voice per ear (64 stereo notes in Single),
+  x2 (default) a mirrored-detuned pair per ear, 4 voices per note (32 notes in Single,
+  16 per layer in Dual/Split), with adjustable BINAURAL DETUNE and STEREO WIDTH
   (how far apart the left/right voices sit; 1 = the former hard left/right).
 - Velocity: Static (default, every note at STATIC VEL) or Dynamic (played velocity
   through an adjustable curve), plus sensitivity for level and brightness.
@@ -240,6 +246,9 @@ Studio generator.
 ./JUCE/build/nSynthTests_artefacts/Release/nSynthTests --dump-params docs/02-PARAMETERS.gen.md
 ./JUCE/build/nSynthTests_artefacts/Release/nSynthTests --snapshot docs/Plugin.png 1.0
 ./JUCE/build/nSynthTests_artefacts/Release/nSynthTests --snapshot docs/PresetBrowser.png 1.0 --browser
+./JUCE/build/nSynthTests_artefacts/Release/nSynthTests --snapshot docs/ModMatrix.png 1.0 --matrix
+./JUCE/build/nSynthTests_artefacts/Release/nSynthTests --snapshot docs/ModMatrixDirect.png 1.0 --direct
+./JUCE/build/nSynthTests_artefacts/Release/nSynthTests --snapshot docs/WaveBank.png 1.0 --waves
 auval -v aumu nSyn NSYA                                          # macOS: AU VALIDATION SUCCEEDED
 ```
 

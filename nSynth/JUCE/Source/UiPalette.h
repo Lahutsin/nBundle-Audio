@@ -14,4 +14,5 @@ inline const juce::Colour kUpperAccent { 0xff3fa9f5 };
 inline const juce::Colour kLowerAccent { 0xfff58a3f };
 inline const juce::Colour kPerfAccent { 0xff9ad46a };
 inline const juce::Colour kFavourite { 0xfff5c542 };
+inline const juce::Colour kNegative { 0xffef6b73 };
 } // namespace nSynth::ui

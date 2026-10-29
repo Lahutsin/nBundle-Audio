@@ -224,23 +224,23 @@ public:
             expectGreaterThan (rms (out.l), 0.01);
         }
 
-        beginTest ("SINGLE + binaural x2: 16 notes x 4 voices = 64 hardware voices; x1: 32 stereo notes");
+        beginTest ("SINGLE + binaural x2: 32 notes x 4 voices = 128 hardware voices; x1: 64 stereo notes");
         {
             Rig rig;
-            expectEquals (SynthEngine::kNumVoices, 64);
+            expectEquals (SynthEngine::kNumVoices, 128);
             std::vector<std::pair<int, juce::MidiMessage>> e;
-            for (int n = 40; n < 57; ++n) e.push_back ({ 0, on (n) });
+            for (int n = 40; n < 73; ++n) e.push_back ({ 0, on (n) });
             rig.render (512, e);
-            expectEquals (rig.voices (Layer::upper), 64);
+            expectEquals (rig.voices (Layer::upper), 128);
             expectEquals (rig.voices (Layer::lower), 0);
             expectEquals (rig.layer (Layer::upper).getUnitSize(), 4);
 
             Rig x1;
             x1.setLayer (Layer::upper, pid::binaural, (float) toInt (BinauralMode::x1));
             std::vector<std::pair<int, juce::MidiMessage>> e1;
-            for (int n = 40; n < 73; ++n) e1.push_back ({ 0, on (n) });
+            for (int n = 30; n < 95; ++n) e1.push_back ({ 0, on (n) });
             x1.render (512, e1);
-            expectEquals (x1.voices (Layer::upper), 64);
+            expectEquals (x1.voices (Layer::upper), 128);
             expectEquals (x1.layer (Layer::upper).getUnitSize(), 2);
         }
 
@@ -276,27 +276,27 @@ public:
             expectLessThan (envelopeSpread (x2Flat.l), 1.05f);
         }
 
-        beginTest ("SINGLE without binaural: 64 mono voices");
+        beginTest ("SINGLE without binaural: 128 mono voices");
         {
             Rig rig;
             rig.setLayer (Layer::upper, pid::binaural, 0.0f);
             std::vector<std::pair<int, juce::MidiMessage>> e;
-            for (int n = 30; n < 96; ++n) e.push_back ({ 0, on (n) });
+            for (int n = 0; n < 128; ++n) e.push_back ({ 0, on (n) });
             rig.render (512, e);
-            expectEquals (rig.voices (Layer::upper), 64);
+            expectEquals (rig.voices (Layer::upper), 128);
             expectEquals (rig.layer (Layer::upper).getUnitSize(), 1);
         }
 
-        beginTest ("DUAL: both layers sound, 32 voices each (8 binaural x2 notes)");
+        beginTest ("DUAL: both layers sound, 64 voices each (16 binaural x2 notes)");
         {
             Rig rig;
             rig.setPerf (pid::kbdMode, (float) toInt (KeyboardMode::dual));
             rig.render (512, chord ({ 60 }));
             expectEquals (rig.voices (Layer::upper), 4);
             expectEquals (rig.voices (Layer::lower), 4);
-            rig.render (512, chord ({ 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71 }));
-            expectEquals (rig.voices (Layer::upper), 32);
-            expectEquals (rig.voices (Layer::lower), 32);
+            rig.render (512, chord ({ 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76 }));
+            expectEquals (rig.voices (Layer::upper), 64);
+            expectEquals (rig.voices (Layer::lower), 64);
         }
 
         beginTest ("SPLIT: below the split point -> LOWER, from the split point -> UPPER");
@@ -360,17 +360,17 @@ public:
             rig.setLayer (Layer::upper, pid::unison, 1.0f);
             rig.setLayer (Layer::upper, pid::unisonSize, (float) toInt (UnisonSize::octave));
             rig.render (512, chord ({ 48 }));
-            expectEquals (rig.voices (Layer::upper), 64);
+            expectEquals (rig.voices (Layer::upper), 128);
             int octaveUp = 0;
             for (auto* v : rig.layer (Layer::upper).getVoices())
                 octaveUp += std::abs (v->getCurrentPitch() - 60.0f) < 0.01f ? 1 : 0;
-            expectEquals (octaveUp, 32);
+            expectEquals (octaveUp, 64);
 
             rig.setLayer (Layer::upper, pid::unisonSize, (float) toInt (UnisonSize::half));
             rig.render (512, { { 0, off (48) } });
             rig.render (48000);
             rig.render (512, chord ({ 50 }));
-            expectEquals (rig.voices (Layer::upper), 32);
+            expectEquals (rig.voices (Layer::upper), 64);
         }
 
         beginTest ("retriggering a sounding voice keeps the oscillator phase (no click)");
@@ -416,13 +416,13 @@ public:
             rig.setLayer (Layer::upper, pid::unison, 1.0f);
             rig.setLayer (Layer::upper, pid::env2Release, 0.001f);
             rig.render (256, chord ({ 60 }));
-            expectEquals (rig.voices (Layer::upper), 64);
+            expectEquals (rig.voices (Layer::upper), 128);
             rig.render (4800, chord ({ 64 }));
             int onFirst = 0, onSecond = 0;
             for (auto* v : rig.layer (Layer::upper).getVoices())
                 if (v->isGateOn()) (v->getNote() == 60 ? onFirst : onSecond)++;
-            expectEquals (onFirst, 32);
-            expectEquals (onSecond, 32);
+            expectEquals (onFirst, 64);
+            expectEquals (onSecond, 64);
         }
 
         beginTest ("binaural: left and right differ (super detune mirrored); mono path with SPREAD 0 is centred");

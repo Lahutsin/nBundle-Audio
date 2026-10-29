@@ -16,7 +16,7 @@ class SynthLayer
 {
 public:
     static constexpr int kOversamplingFactor = 2;
-    static constexpr int kMaxVoices = 64;
+    static constexpr int kMaxVoices = 128;
 
     SynthLayer (juce::AudioProcessorValueTreeState& state, Layer id);
 

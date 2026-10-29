@@ -37,7 +37,7 @@ public:
     {
         WaveBank bank;
 
-        beginTest ("classic saw: a rising, slightly convex (Minimoog-style) ramp from -1 to +1");
+        beginTest ("classic saw: a rising, slightly convex (capacitor-charge) ramp from -1 to +1");
         {
             const auto& saw = bank.classic (1);
             // The table is built from harmonics 1..N/2, so the ramp's DC offset is removed.
@@ -74,7 +74,7 @@ public:
         {
             expectEquals (WaveBank::altWaveNames().size(), WaveBank::kNumAltWaves);
             for (const auto& name : WaveBank::altWaveNames())
-                expect (name.startsWith ("TX ") || name.startsWith ("CZ ") || name.startsWith ("DW ") || name.startsWith ("PPG "), name);
+                expect (name.startsWith ("FM ") || name.startsWith ("PD ") || name.startsWith ("DG ") || name.startsWith ("WT "), name);
         }
 
         beginTest ("every mip level is band-limited to its harmonic budget");

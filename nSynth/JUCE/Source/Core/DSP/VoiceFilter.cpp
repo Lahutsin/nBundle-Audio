@@ -66,7 +66,7 @@ void VoiceFilter::setParameters (float hpfHz, float lpfHz, float res, Drive newD
         drive = newDrive;
         const float r = juce::jlimit (0.0f, 1.0f, res);
         k = r * kMaxFeedback;
-        // SEM: damping 2R from Butterworth (R = 0.707) down to slightly negative for self-oscillation.
+        // SVF: damping 2R from Butterworth (R = 0.707) down to slightly negative for self-oscillation.
         svfDamping = 2.0f * (0.7071f - 0.7871f * r);
 
         // DRIVE sets how hard the input hits the saturating stages; the output gain keeps small
@@ -79,20 +79,20 @@ void VoiceFilter::setParameters (float hpfHz, float lpfHz, float res, Drive newD
         }
 
         // A ladder loses 1 / (1 + k) of its passband with resonance. Half of it is made up at the
-        // input, which keeps the low end fat and drives the stages harder, as on a Minimoog.
+        // input, which keeps the low end fat and drives the stages harder, as on classic ladder designs.
         switch (type)
         {
-            case FilterType::moog24:
-            case FilterType::moog12:    bassCompensation = 0.5f; break;
-            case FilterType::jupiter24: bassCompensation = 0.6f; break;
-            case FilterType::sem12:     bassCompensation = 0.0f; break;
+            case FilterType::ladder24:
+            case FilterType::ladder12:    bassCompensation = 0.5f; break;
+            case FilterType::cascade24: bassCompensation = 0.6f; break;
+            case FilterType::svf12:     bassCompensation = 0.0f; break;
         }
     }
 }
 
 float VoiceFilter::processLadder (float u0) noexcept
 {
-    const bool ota = type == FilterType::jupiter24;
+    const bool ota = type == FilterType::cascade24;
     float u = lastInput;
     float est[4] { y[0], y[1], y[2], y[3] };
 
@@ -139,13 +139,13 @@ float VoiceFilter::processLadder (float u0) noexcept
         s[i] = 2.0f * est[i] - s[i];
     }
     lastInput = u;
-    return type == FilterType::moog12 ? y[1] : y[3];
+    return type == FilterType::ladder12 ? y[1] : y[3];
 }
 
 float VoiceFilter::processSvf (float x) noexcept
 {
     // TPT state-variable filter; the band-pass integrator saturates, which bounds the
-    // self-oscillation and gives the SEM its round, vocal resonance.
+    // self-oscillation and gives the SVF its round, vocal resonance.
     const float hp = (x - (svfDamping + g) * s[0] - s[1]) / (1.0f + svfDamping * g + g * g);
     const float bp = g * hp + s[0];
     const float lp = g * bp + s[1];
@@ -166,7 +166,7 @@ float VoiceFilter::process (float x) noexcept
     hpState = lp + v;
     const float hp = x - lp;
 
-    if (type == FilterType::sem12)
+    if (type == FilterType::svf12)
         return processSvf (softClip (hp * inputGain)) * outputGain;
 
     const float u0 = hp * inputGain * (1.0f + bassCompensation * k);

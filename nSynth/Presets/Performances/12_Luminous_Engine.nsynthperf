@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 
-<NSYNTH stateVersion="6" name="Luminous Engine" upperPatch="Jupiter String"
+<NSYNTH stateVersion="6" name="Luminous Engine" upperPatch="Jasper String"
         lowerPatch="Moraine" category="Splits">
   <PARAM id="lo_bend_dds" value="2.0"/>
   <PARAM id="lo_bend_vcf" value="0.0"/>

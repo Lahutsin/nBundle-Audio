@@ -6,12 +6,12 @@
 namespace nsynth
 {
 // 1-pole HPF (6 dB/oct) followed by one of four analog-modelled low-pass filters:
-//   Moog 24    transistor ladder, tanh saturation in every stage and at the input (Huovilainen
+//   Ladder 24  transistor ladder, tanh saturation in every stage and at the input (Huovilainen
 //              model); 24 dB/oct, the classic fat, slightly bass-shy resonance.
-//   Moog 12    the same ladder tapped after the second stage: 12 dB/oct with a ladder resonance.
-//   Jupiter 24 OTA cascade (IR3109 style): each stage saturates the difference of its input and
+//   Ladder 12  the same ladder tapped after the second stage: 12 dB/oct with a ladder resonance.
+//   Cascade 24 OTA cascade: each stage saturates the difference of its input and
 //              output, smoother and brighter at high resonance.
-//   SEM 12     state-variable filter (Oberheim SEM style) with a saturating band-pass integrator.
+//   SVF 12     state-variable filter with a saturating band-pass integrator.
 // All are zero-delay-feedback (TPT) structures. The non-linear terms are linearised around the
 // previous estimate (tanh(x) ~ x * tanh(x0)/x0) and the resulting linear system is solved exactly;
 // two passes per sample keep the cutoff and resonance accurate at high drive. See docs/03-DSP-SPEC.md §4.
@@ -26,7 +26,7 @@ public:
     void reset() noexcept;
 
     // cutoffs in Hz, res 0..1
-    void setParameters (float hpfHz, float lpfHz, float res, Drive drive, FilterType type = FilterType::moog24) noexcept;
+    void setParameters (float hpfHz, float lpfHz, float res, Drive drive, FilterType type = FilterType::ladder24) noexcept;
 
     float process (float input) noexcept;
 
@@ -43,7 +43,7 @@ private:
 
     double sampleRate { 44100.0 };
     Drive drive { Drive::off };
-    FilterType type { FilterType::moog24 };
+    FilterType type { FilterType::ladder24 };
     float lastHpfHz { -1.0f }, lastLpfHz { -1.0f }, lastRes { -1.0f };
     float hpG { 0.0f }, hpState { 0.0f };
     float g { 0.0f }, k { 0.0f }, svfDamping { 1.0f };

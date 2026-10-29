@@ -110,15 +110,15 @@ float MipWavetable::read (int level, double phase) const noexcept
 const juce::StringArray& WaveBank::altWaveNames()
 {
     static const juce::StringArray names {
-        // 1-8: Yamaha 4-op FM waveforms (TX81Z / OPL family)
-        "TX Sine", "TX Half Sine", "TX Abs Sine", "TX Quarter Sine", "TX Alt Sine", "TX Camel Sine", "TX Square", "TX Log Saw",
-        // 9-16: Casio CZ phase distortion
-        "CZ Saw", "CZ Square", "CZ Pulse", "CZ Double Sine", "CZ Saw Pulse", "CZ Reso Saw", "CZ Reso Tri", "CZ Reso Trap",
-        // 17-29: Korg DW-8000 style digital waveform spectra
-        "DW Piano", "DW E.Piano", "DW Hard EP", "DW Clavi", "DW Organ", "DW Brass", "DW Sax", "DW Strings",
-        "DW Guitar", "DW E.Guitar", "DW Bass", "DW Digi Bass", "DW Bell",
-        // 30-32: PPG Wave style
-        "PPG Vocal A", "PPG Vocal O", "PPG Digital"
+        // 1-8: FM, 4-operator FM waveforms
+        "FM Sine", "FM Half Sine", "FM Abs Sine", "FM Quarter Sine", "FM Alt Sine", "FM Camel Sine", "FM Square", "FM Log Saw",
+        // 9-16: PD, phase distortion
+        "PD Saw", "PD Square", "PD Pulse", "PD Double Sine", "PD Saw Pulse", "PD Reso Saw", "PD Reso Tri", "PD Reso Trap",
+        // 17-29: DG, digital waveform spectra
+        "DG Piano", "DG E.Piano", "DG Hard EP", "DG Clavi", "DG Organ", "DG Brass", "DG Sax", "DG Strings",
+        "DG Guitar", "DG E.Guitar", "DG Bass", "DG Digi Bass", "DG Bell",
+        // 30-32: WT, wavetable style
+        "WT Vocal A", "WT Vocal O", "WT Digital"
     };
     return names;
 }
@@ -135,11 +135,11 @@ std::vector<float> WaveBank::makeClassicCycle (int index)
         switch (index)
         {
             case 0: v = std::sin (twoPi * p); break;                               // pure sine (FM reference)
-            case 1: v = 2.0 * analogRamp (p) - 1.0; break;                         // Minimoog-style saw
-            case 2:                                                                 // Prophet-style square with droop
+            case 1: v = 2.0 * analogRamp (p) - 1.0; break;                         // analog saw, convex ramp
+            case 2:                                                                 // analog square with droop
                 v = p < 0.5 ? 1.0 - kSquareDroop * (p / 0.5) : -1.0 + kSquareDroop * ((p - 0.5) / 0.5);
                 break;
-            case 3:                                                                 // Moog-style triangle, rounded tips
+            case 3:                                                                 // triangle, rounded tips
             {
                 const double t = p < 0.25 ? 4.0 * p : p < 0.75 ? 2.0 - 4.0 * p : 4.0 * p - 4.0;
                 v = roundTriangle (t);
@@ -167,7 +167,7 @@ std::vector<float> WaveBank::makeFactoryAltCycle (int index)
         return sum;
     };
     auto peakAt = [] (double k, double centre, double width) { return std::exp (-0.5 * std::pow ((k - centre) / width, 2.0)); };
-    // Casio CZ phase distortion: a cosine read through a bent phase.
+    // Phase distortion: a cosine read through a bent phase.
     auto pdSaw = [] (double p, double knee) { return p < knee ? 0.5 * p / knee : 0.5 + 0.5 * (p - knee) / (1.0 - knee); };
     auto pdSquare = [] (double p, double knee)
     {
@@ -176,7 +176,7 @@ std::vector<float> WaveBank::makeFactoryAltCycle (int index)
         if (p < 0.5 + knee)  return 0.5 + 0.5 * (p - 0.5) / knee;
         return 1.0;
     };
-    // CZ resonance waves: a cosine at the resonance frequency inside a window that restarts every cycle.
+    // PD resonance waves: a cosine at the resonance frequency inside a window that restarts every cycle.
     auto reso = [&] (double p, double window) { return 1.0 - window * (1.0 - std::cos (twoPi * 6.0 * p)); };
 
     for (int n = 0; n < N; ++n)
@@ -187,7 +187,7 @@ std::vector<float> WaveBank::makeFactoryAltCycle (int index)
 
         switch (index)
         {
-            // ---- Yamaha 4-op FM waveforms
+            // ---- 4-operator FM waveforms
             case 0:  v = s; break;
             case 1:  v = p < 0.5 ? s : 0.0; break;
             case 2:  v = std::abs (s); break;
@@ -197,7 +197,7 @@ std::vector<float> WaveBank::makeFactoryAltCycle (int index)
             case 6:  v = p < 0.5 ? 1.0 : -1.0; break;
             case 7:  v = p < 0.5 ? std::exp (-16.0 * p) : -std::exp (-16.0 * (1.0 - p)); break;
 
-            // ---- Casio CZ phase distortion
+            // ---- Phase distortion
             case 8:  v = std::cos (twoPi * pdSaw (p, 0.06)); break;
             case 9:  v = std::cos (twoPi * pdSquare (p, 0.06)); break;
             case 10: v = std::cos (twoPi * juce::jmin (1.0, p / 0.18)); break;
@@ -207,7 +207,7 @@ std::vector<float> WaveBank::makeFactoryAltCycle (int index)
             case 14: v = reso (p, 1.0 - std::abs (2.0 * p - 1.0)); break;
             case 15: v = reso (p, juce::jmin (1.0, 4.0 * juce::jmin (p, 1.0 - p))); break;
 
-            // ---- Korg DW-8000 style spectra
+            // ---- Digital spectra
             case 16: v = additive (p, 64, [&] (int k) { return std::pow ((double) k, -0.9) * (k % 7 == 0 ? 0.25 : 1.0); }); break;
             case 17: v = additive (p, 32, [&] (int k) { return (k == 1 ? 1.0 : 0.3 / (k * k)) + 0.12 * peakAt (k, 8.0, 1.0); }); break;
             case 18: v = additive (p, 48, [&] (int k) { return std::pow ((double) k, -1.2) * (1.0 + 1.5 * peakAt (k, 3.0, 0.5) + 2.0 * peakAt (k, 10.0, 1.5)); }); break;
@@ -222,7 +222,7 @@ std::vector<float> WaveBank::makeFactoryAltCycle (int index)
             case 27: v = additive (p, 15, [] (int k) { return k == 2 ? 0.5 : (k % 2 == 1 ? 1.0 / k : 0.0); }); break;
             case 28: v = additive (p, 16, [] (int k) { return k == 1 ? 1.0 : k == 4 ? 0.7 : k == 7 ? 0.5 : k == 11 ? 0.4 : k == 16 ? 0.25 : 0.0; }); break;
 
-            // ---- PPG Wave style
+            // ---- Wavetable style
             case 29: v = additive (p, 48, [&] (int k) { return (peakAt (k, 6.5, 1.5) + 0.7 * peakAt (k, 10.0, 2.0) + 0.04) / std::sqrt ((double) k); }); break;
             case 30: v = additive (p, 48, [&] (int k) { return (peakAt (k, 4.0, 1.2) + 0.6 * peakAt (k, 7.0, 1.5) + 0.04) / std::sqrt ((double) k); }); break;
             default: v = std::floor (16.0 * p) / 15.0 * 2.0 - 1.0; break;

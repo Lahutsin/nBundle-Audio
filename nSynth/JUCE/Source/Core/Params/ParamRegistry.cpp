@@ -53,10 +53,10 @@ std::vector<ParamSpec> buildLayerSpecs()
     return {
         // ---------------------------------------------------------------- DDS 1
         C (pid::dds1Wave, "DDS1 Waveform", S::dds1, { "Sine", "Sawtooth", "Square", "Triangle", "Noise", "Alt" }, 1, 29, "",
-           "Saw: Minimoog-style ramp, Square: Prophet-style with droop, Triangle: rounded Moog-style; SUPER = JP-8000 super saw."),
+           "Saw: slightly convex analog ramp, Square: with AC-coupled plateau droop, Triangle: rounded tips; SUPER = 7-oscillator super saw."),
         C (pid::dds1Range, "DDS1 Range", S::dds1, { "64'", "32'", "16'", "8'", "4'", "2'" }, 3, 30, "p.33", "8' = concert pitch."),
         C (pid::dds1AltA, "DDS1 Alt Wave A", S::dds1, WaveBank::altWaveNames(), 0, -1, "p.33-34",
-           "Alt waveform A: TX = 4-op FM, CZ = phase distortion, DW = DW-8000 style, PPG = wavetable style."),
+           "Alt waveform A: FM = 4-operator FM, PD = phase distortion, DG = digital spectra, WT = wavetable style."),
         C (pid::dds1AltB, "DDS1 Alt Wave B", S::dds1, WaveBank::altWaveNames(), 1, -1, "p.33-34",
            "Alt waveform B; PWM/WAVE morphs A->B."),
 
@@ -87,8 +87,8 @@ std::vector<ParamSpec> buildLayerSpecs()
         F (pid::hpf, "HPF Cutoff", S::vcf, 10.0f, 4000.0f, 10.0f, Exp, 0, "Hz", 95, "p.42", "1-pole 6 dB/oct."),
         F (pid::lpf, "LPF Cutoff", S::vcf, 15.0f, 25000.0f, 25000.0f, Exp, 0, "Hz", 74, "p.42", "Low-pass cutoff (see VCF Type)."),
         F (pid::res, "Resonance", S::vcf, 0.0f, 1.0f, 0.0f, Lin, 0, "", 71, "p.42", "Self-oscillates near max."),
-        C (pid::vcfType, "VCF Type", S::vcf, { "Moog 24", "Moog 12", "Jupiter 24", "SEM 12" }, 0, -1, "-",
-           "Moog 24/12: transistor ladder; Jupiter 24: OTA cascade; SEM 12: state-variable filter."),
+        C (pid::vcfType, "VCF Type", S::vcf, { "Ladder 24", "Ladder 12", "Cascade 24", "SVF 12" }, 0, -1, "-",
+           "Ladder 24/12: transistor ladder; Cascade 24: OTA cascade; SVF 12: state-variable filter."),
         C (pid::vcfDrive, "VCF Drive", S::vcf, { "Off", "1", "2" }, 0, 41, "p.42"),
         F (pid::vcfEnv, "VCF Env Amount", S::vcf, 0.0f, 1.0f, 0.0f, Lin, 0, "", 45, "p.42", "Max +8 octaves."),
         C (pid::vcfEnvSource, "VCF Env Source", S::vcf, { "ENV 1", "1 + 2", "ENV 2" }, 0, 44, "p.42"),

@@ -56,6 +56,80 @@ juce::String shortChoiceText (const juce::String& choice)
     if (choice == "On (AT->Bend)") return "On";
     return choice;
 }
+
+// Overlay pages (mod matrix, wave bank): a framed panel with an accent strip, a title row on
+// top and a centred CLOSE button at the bottom.
+constexpr int kPageHeader = 32, kPageFooter = 40, kPageTitleWidth = 320;
+
+juce::Rectangle<int> pageContent (juce::Rectangle<int> bounds)
+{
+    return bounds.reduced (12).reduced (16, 14);
+}
+
+void paintPageFrame (juce::Graphics& g, juce::Rectangle<int> bounds, juce::Colour accent)
+{
+    g.fillAll (kBackground);
+    const auto panel = bounds.reduced (12).toFloat();
+    g.setColour (kPanel);
+    g.fillRoundedRectangle (panel, 8.0f);
+    g.setColour (kOutline);
+    g.drawRoundedRectangle (panel.reduced (0.5f), 8.0f, 1.0f);
+    g.setColour (accent);
+    g.fillRect (panel.withHeight (3.0f).reduced (8.0f, 0.0f));
+}
+
+// Page name followed by a tag chip (e.g. the edited layer).
+void paintPageTitle (juce::Graphics& g, juce::Rectangle<int> header, const juce::String& name,
+                     const juce::String& tag, juce::Colour accent)
+{
+    auto area = header.withWidth (kPageTitleWidth);
+    g.setFont (juce::Font (juce::FontOptions (19.0f)).boldened());
+    g.setColour (kText);
+    const int nameWidth = juce::GlyphArrangement::getStringWidthInt (g.getCurrentFont(), name);
+    g.drawText (name, area.removeFromLeft (nameWidth + 12), juce::Justification::centredLeft);
+
+    g.setFont (juce::Font (juce::FontOptions (11.0f)).boldened());
+    const int tagWidth = juce::GlyphArrangement::getStringWidthInt (g.getCurrentFont(), tag) + 14;
+    const auto chip = area.removeFromLeft (tagWidth).withSizeKeepingCentre (tagWidth, 20).toFloat();
+    g.setColour (accent.withAlpha (0.2f));
+    g.fillRoundedRectangle (chip, 4.0f);
+    g.setColour (accent);
+    g.drawText (tag, chip, juce::Justification::centred);
+}
+
+void paintClearButton (juce::Graphics& g, juce::Rectangle<int> r, bool hot)
+{
+    const auto c = r.toFloat();
+    g.setColour (hot ? kNegative : kOutline);
+    g.fillEllipse (c);
+    const auto x = c.reduced (c.getWidth() * 0.32f);
+    g.setColour (kText);
+    g.drawLine ({ x.getTopLeft(), x.getBottomRight() }, 1.5f);
+    g.drawLine ({ x.getBottomLeft(), x.getTopRight() }, 1.5f);
+}
+
+// One waveform cycle scaled into the area, over a zero line.
+void paintCycle (juce::Graphics& g, const std::vector<float>& cycle, juce::Rectangle<float> area,
+                 juce::Colour colour, float thickness, int points)
+{
+    g.setColour (kOutline);
+    g.drawHorizontalLine (juce::roundToInt (area.getCentreY()), area.getX(), area.getRight());
+    if (cycle.empty() || area.getHeight() < 4.0f)
+        return;
+
+    juce::Path path;
+    for (int i = 0; i < points; ++i)
+    {
+        const float normX = (float) i / (float) (points - 1);
+        const size_t idx = (size_t) juce::jlimit (0, (int) cycle.size() - 1, (int) (normX * (float) (cycle.size() - 1)));
+        const float x = area.getX() + normX * area.getWidth();
+        const float y = area.getCentreY() - juce::jlimit (-1.0f, 1.0f, cycle[idx]) * (area.getHeight() * 0.48f);
+        if (i == 0) path.startNewSubPath (x, y);
+        else        path.lineTo (x, y);
+    }
+    g.setColour (colour);
+    g.strokePath (path, juce::PathStrokeType (thickness, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+}
 } // namespace
 
 //==============================================================================
@@ -354,59 +428,97 @@ void SectionPanel::resized()
 }
 
 //==============================================================================
+ModAmountCell::ModAmountCell()
+    : juce::Slider (juce::Slider::RotaryVerticalDrag, juce::Slider::NoTextBox)
+{
+    setRange (-1.0, 1.0, 0.01);
+    setDoubleClickReturnValue (true, 0.0);
+    setMouseDragSensitivity (160);
+    setRepaintsOnMouseActivity (true);
+    setMouseCursor (juce::MouseCursor::UpDownResizeCursor);
+}
+
+void ModAmountCell::paint (juce::Graphics& g)
+{
+    auto r = getLocalBounds().toFloat().reduced (2.0f);
+    if (! isEnabled())
+    {
+        g.setColour (kPanel.darker (0.25f));
+        g.fillRoundedRectangle (r, 4.0f);
+        g.setColour (kOutline);
+        g.fillRect (juce::Rectangle<float> (juce::jmin (14.0f, r.getWidth() * 0.4f), 1.5f).withCentre (r.getCentre()));
+        return;
+    }
+
+    g.setColour (kBackground);
+    g.fillRoundedRectangle (r, 4.0f);
+    g.setColour (kOutline);
+    g.fillRect (juce::Rectangle<float> (1.0f, r.getHeight() * 0.5f).withCentre (r.getCentre()));
+
+    // The bar grows from the centre: right and green for positive, left and red for negative amounts.
+    const float amount = (float) getValue();
+    if (amount != 0.0f)
+    {
+        const auto colour = amount > 0.0f ? kPerfAccent : kNegative;
+        const float from = r.getCentreX(), to = from + amount * (r.getWidth() * 0.5f - 3.0f);
+        auto bar = juce::Rectangle<float>::leftTopRightBottom (juce::jmin (from, to), r.getY() + 4.0f,
+                                                               juce::jmax (from, to), r.getBottom() - 4.0f);
+        g.setColour (colour.withAlpha (0.3f));
+        g.fillRoundedRectangle (bar, 3.0f);
+        g.setColour (colour);
+        g.fillRect (amount > 0.0f ? bar.removeFromRight (2.0f) : bar.removeFromLeft (2.0f));
+
+        g.setColour (kText);
+        g.setFont (juce::Font (juce::FontOptions (r.getWidth() < 60.0f ? 10.5f : 12.5f)).boldened());
+        g.drawFittedText ((amount > 0.0f ? "+" : "") + juce::String (amount, 2), r.toNearestInt(),
+                          juce::Justification::centred, 1, 0.7f);
+    }
+
+    g.setColour (isMouseOverOrDragging() ? kText.withAlpha (0.7f) : kOutline);
+    g.drawRoundedRectangle (r, 4.0f, 1.0f);
+}
+
+//==============================================================================
 ModMatrixGrid::ModMatrixGrid (ModMatrix& m, bool isDirect)
     : matrix (&m), direct (isDirect)
 {
-    const int columns = direct ? ModMatrixData::directTargetCount : ModMatrixData::targetCount;
-    for (int source = 0; source < ModMatrixData::sourceCount; ++source)
-    {
-        auto label = std::make_unique<juce::Label>();
-        label->setText (ModMatrix::getSourceName ((ModSource) source), juce::dontSendNotification);
-        label->setColour (juce::Label::textColourId, kText);
-        label->setFont (juce::Font (juce::FontOptions (11.0f)));
-        addAndMakeVisible (*label);
-        rowLabels.push_back (std::move (label));
-    }
-    for (int target = 0; target < columns; ++target)
-    {
-        auto label = std::make_unique<juce::Label>();
-        label->setText (direct ? ModMatrix::getDirectTargetName ((DirectModTarget) target)
-                               : ModMatrix::getTargetName ((ModTarget) target), juce::dontSendNotification);
-        label->setColour (juce::Label::textColourId, kTextDim);
-        label->setFont (juce::Font (juce::FontOptions (10.0f)));
-        label->setMinimumHorizontalScale (0.5f);
-        label->setJustificationType (juce::Justification::centred);
-        addAndMakeVisible (*label);
-        columnLabels.push_back (std::move (label));
-    }
+    const int columns = columnCount();
+    rowLabels.resize ((size_t) ModMatrixData::sourceCount);
+    columnLabels.resize ((size_t) columns);
+    activeRows.assign (rowLabels.size(), false);
+    activeColumns.assign (columnLabels.size(), false);
 
     cells.reserve ((size_t) (ModMatrixData::sourceCount * columns));
     for (int source = 0; source < ModMatrixData::sourceCount; ++source)
         for (int target = 0; target < columns; ++target)
         {
-            auto slider = std::make_unique<juce::Slider> (juce::Slider::LinearVertical, juce::Slider::TextBoxBelow);
-            slider->setRange (-1.0, 1.0, 0.01);
-            slider->setTextBoxStyle (juce::Slider::TextBoxBelow, false, direct ? 44 : 70, 14);
-            slider->setColour (juce::Slider::textBoxTextColourId, kText);
-            slider->setColour (juce::Slider::textBoxBackgroundColourId, kBackground);
-            slider->setColour (juce::Slider::thumbColourId, kPerfAccent);
-            slider->setTooltip (juce::String (ModMatrix::getSourceName ((ModSource) source)) + " → "
-                                + (direct ? ModMatrix::getDirectTargetName ((DirectModTarget) target)
-                                          : ModMatrix::getTargetName ((ModTarget) target)));
+            auto cell = std::make_unique<ModAmountCell>();
+            const auto route = juce::String (ModMatrix::getSourceName ((ModSource) source)) + " -> " + targetName (target);
+            cell->setTooltip (route);
             if (direct && ModMatrix::isPanelDuplicate ((ModSource) source, (DirectModTarget) target))
             {
-                slider->setEnabled (false);
-                slider->setTooltip (slider->getTooltip() + " (already available on the panel)");
+                cell->setEnabled (false);
+                cell->setTooltip (route + " (already a knob on the panel)");
             }
-            slider->onValueChange = [this, source, target, control = slider.get()]
+            cell->onValueChange = [this, source, target, control = cell.get()]
             {
                 if (! updating && ! setAmountAt (source, target, (float) control->getValue()))
                     control->setValue (amountAt (source, target), juce::dontSendNotification);
             };
-            addAndMakeVisible (*slider);
-            cells.push_back (std::move (slider));
+            addAndMakeVisible (*cell);
+            cells.push_back (std::move (cell));
         }
     startTimerHz (15);
+}
+
+int ModMatrixGrid::columnCount() const noexcept
+{
+    return direct ? ModMatrixData::directTargetCount : ModMatrixData::targetCount;
+}
+
+juce::String ModMatrixGrid::targetName (int target) const
+{
+    return direct ? ModMatrix::getDirectTargetName ((DirectModTarget) target) : ModMatrix::getTargetName ((ModTarget) target);
 }
 
 void ModMatrixGrid::setMatrix (ModMatrix& m)
@@ -430,122 +542,331 @@ bool ModMatrixGrid::setAmountAt (int source, int target, float amount)
     return true;
 }
 
+// Clears only this page's cells: ModMatrix::clearSource() would also wipe the other page.
+void ModMatrixGrid::clearRow (int source)
+{
+    for (int target = 0; target < columnCount(); ++target)
+        if (amountAt (source, target) != 0.0f)
+            setAmountAt (source, target, 0.0f);
+    timerCallback();
+}
+
+void ModMatrixGrid::clearColumn (int target)
+{
+    if (direct)
+        matrix->clearDirectTarget ((DirectModTarget) target);
+    else
+        matrix->clearTarget ((ModTarget) target);
+    timerCallback();
+}
+
+juce::Rectangle<int> ModMatrixGrid::rowClearButton (juce::Rectangle<int> label) noexcept
+{
+    return label.removeFromRight (22).withSizeKeepingCentre (16, 16);
+}
+
+juce::Rectangle<int> ModMatrixGrid::columnClearButton (juce::Rectangle<int> label) noexcept
+{
+    return label.removeFromBottom (18).withSizeKeepingCentre (16, 16);
+}
+
+std::pair<int, int> ModMatrixGrid::clearButtonAt (juce::Point<int> position) const noexcept
+{
+    for (size_t source = 0; source < rowLabels.size(); ++source)
+        if (activeRows[source] && rowClearButton (rowLabels[source]).expanded (3).contains (position))
+            return { (int) source, -1 };
+    for (size_t target = 0; target < columnLabels.size(); ++target)
+        if (activeColumns[target] && columnClearButton (columnLabels[target]).expanded (3).contains (position))
+            return { -1, (int) target };
+    return { -1, -1 };
+}
+
+void ModMatrixGrid::mouseDown (const juce::MouseEvent& event)
+{
+    const auto [source, target] = clearButtonAt (event.getPosition());
+    if (source >= 0)
+        clearRow (source);
+    else if (target >= 0)
+        clearColumn (target);
+    else
+        return;
+    hoveredClear = { -1, -1 };
+    setMouseCursor (juce::MouseCursor::NormalCursor);
+}
+
+void ModMatrixGrid::mouseMove (const juce::MouseEvent& event)
+{
+    const auto hit = clearButtonAt (event.getPosition());
+    if (hit == hoveredClear)
+        return;
+    hoveredClear = hit;
+    setMouseCursor (hit.first >= 0 || hit.second >= 0 ? juce::MouseCursor::PointingHandCursor : juce::MouseCursor::NormalCursor);
+    repaint();
+}
+
+void ModMatrixGrid::mouseExit (const juce::MouseEvent&)
+{
+    if (hoveredClear == std::pair<int, int> { -1, -1 })
+        return;
+    hoveredClear = { -1, -1 };
+    setMouseCursor (juce::MouseCursor::NormalCursor);
+    repaint();
+}
+
 void ModMatrixGrid::timerCallback()
 {
-    const int columns = direct ? ModMatrixData::directTargetCount : ModMatrixData::targetCount;
-    juce::ScopedValueSetter<bool> guard (updating, true);
-    for (int source = 0; source < ModMatrixData::sourceCount; ++source)
-        for (int target = 0; target < columns; ++target)
-            cells[(size_t) (source * columns + target)]->setValue (amountAt (source, target), juce::dontSendNotification);
+    const int columns = columnCount();
+    std::vector<bool> rows (activeRows.size(), false), targets (activeColumns.size(), false);
+    {
+        juce::ScopedValueSetter<bool> guard (updating, true);
+        for (int source = 0; source < ModMatrixData::sourceCount; ++source)
+            for (int target = 0; target < columns; ++target)
+            {
+                const float amount = amountAt (source, target);
+                cells[(size_t) (source * columns + target)]->setValue (amount, juce::dontSendNotification);
+                if (amount != 0.0f)
+                {
+                    rows[(size_t) source] = true;
+                    targets[(size_t) target] = true;
+                }
+            }
+    }
+    if (rows != activeRows || targets != activeColumns)
+    {
+        activeRows = std::move (rows);
+        activeColumns = std::move (targets);
+        repaint();
+    }
+}
+
+void ModMatrixGrid::paint (juce::Graphics& g)
+{
+    // Alternate row shading keeps a source readable across the wide direct-mapping grid.
+    for (size_t source = 0; source < rowLabels.size(); ++source)
+    {
+        const auto row = rowLabels[source].withRight (getWidth());
+        if (source % 2 == 0)
+        {
+            g.setColour (kBackground.withAlpha (0.35f));
+            g.fillRoundedRectangle (row.toFloat(), 4.0f);
+        }
+        const bool active = activeRows[source];
+        auto label = rowLabels[source].withTrimmedLeft (10);
+        if (active)
+        {
+            const auto button = rowClearButton (rowLabels[source]);
+            paintClearButton (g, button, hoveredClear.first == (int) source);
+            label.setRight (button.getX() - 4);
+        }
+        g.setColour (active ? kText : kTextDim);
+        g.setFont (juce::Font (juce::FontOptions (13.0f)).withStyle (active ? juce::Font::bold : juce::Font::plain));
+        g.drawFittedText (ModMatrix::getSourceName ((ModSource) source), label, juce::Justification::centredLeft, 1, 0.8f);
+    }
+
+    for (size_t target = 0; target < columnLabels.size(); ++target)
+    {
+        const bool active = activeColumns[target];
+        const auto label = columnLabels[target];
+        if (active)
+            paintClearButton (g, columnClearButton (label), hoveredClear.second == (int) target);
+        g.setColour (active ? kText : kTextDim);
+        g.setFont (juce::Font (juce::FontOptions (direct ? 10.5f : 12.5f)).withStyle (active ? juce::Font::bold : juce::Font::plain));
+        // Multi-word names wrap instead of squashing, so the headers keep one font size; a single
+        // long word (Portamento) may still be narrowed rather than cut off.
+        const auto name = targetName ((int) target);
+        g.drawFittedText (name, label.withTrimmedBottom (20).reduced (2, 0), juce::Justification::centredBottom, 3,
+                          name.containsChar (' ') ? 1.0f : 0.7f);
+    }
 }
 
 void ModMatrixGrid::resized()
 {
-    auto area = getLocalBounds().reduced (6);
-    const int labelWidth = direct ? 105 : 130;
-    const int headerHeight = 52;
-    const int rowHeight = juce::jmax (44, (area.getHeight() - headerHeight) / ModMatrixData::sourceCount);
-    auto header = area.removeFromTop (headerHeight);
+    auto area = getLocalBounds();
+    const int columns = columnCount();
+    const int labelWidth = 160;
+    auto header = area.removeFromTop (direct ? 64 : 44);
     header.removeFromLeft (labelWidth);
-    const int columnWidth = header.getWidth() / (int) columnLabels.size();
-    for (int target = 0; target < (int) columnLabels.size(); ++target)
-        columnLabels[(size_t) target]->setBounds (header.getX() + target * columnWidth, header.getY(), columnWidth, header.getHeight());
+    const float columnWidth = (float) header.getWidth() / (float) columns;
+    const float rowHeight = (float) area.getHeight() / (float) ModMatrixData::sourceCount;
+
+    for (int target = 0; target < columns; ++target)
+        columnLabels[(size_t) target] = juce::Rectangle<float> ((float) header.getX() + (float) target * columnWidth, (float) header.getY(),
+                                                                columnWidth, (float) header.getHeight()).toNearestInt();
 
     for (int source = 0; source < ModMatrixData::sourceCount; ++source)
     {
-        auto row = area.removeFromTop (rowHeight);
-        rowLabels[(size_t) source]->setBounds (row.removeFromLeft (labelWidth).reduced (2));
-        const int cellWidth = row.getWidth() / (int) columnLabels.size();
-        for (int target = 0; target < (int) columnLabels.size(); ++target)
-            cells[(size_t) (source * (int) columnLabels.size() + target)]->setBounds (
-                row.getX() + target * cellWidth, row.getY(), cellWidth, row.getHeight());
+        auto row = juce::Rectangle<float> ((float) area.getX(), (float) area.getY() + (float) source * rowHeight,
+                                           (float) area.getWidth(), rowHeight).toNearestInt();
+        rowLabels[(size_t) source] = row.removeFromLeft (labelWidth);
+        for (int target = 0; target < columns; ++target)
+            cells[(size_t) (source * columns + target)]->setBounds (
+                juce::Rectangle<float> ((float) row.getX() + (float) target * columnWidth, (float) row.getY(),
+                                        columnWidth, (float) row.getHeight()).toNearestInt());
     }
 }
 
+//==============================================================================
 ModMatrixPage::ModMatrixPage (SynthEngine& e, Layer initialLayer)
-    : engine (e), layer (initialLayer)
+    : engine (e), layer (initialLayer),
+      matrixGrid (engine.modMatrix (initialLayer), false), directGrid (engine.modMatrix (initialLayer), true)
 {
     setOpaque (true);
-    tabs.addTab ("8 × 8 MATRIX", kPanel, new ModMatrixGrid (engine.modMatrix (layer), false), true);
-    tabs.addTab ("DIRECT MAPPING", kPanel, new ModMatrixGrid (engine.modMatrix (layer), true), true);
-    addAndMakeVisible (tabs);
-    for (auto* button : { &closeButton, &clearAllButton, &clearSourceButton, &clearTargetButton })
-        addAndMakeVisible (*button);
-    addAndMakeVisible (sourceChoice);
-    addAndMakeVisible (targetChoice);
-    for (int i = 0; i < ModMatrixData::sourceCount; ++i)
-        sourceChoice.addItem (ModMatrix::getSourceName ((ModSource) i), i + 1);
-    for (int i = 0; i < ModMatrixData::targetCount; ++i)
-        targetChoice.addItem (ModMatrix::getTargetName ((ModTarget) i), i + 1);
-    targetChoice.setSelectedId (1, juce::dontSendNotification);
-    sourceChoice.setSelectedId (1, juce::dontSendNotification);
-    closeButton.onClick = [this] { if (onClose != nullptr) onClose(); };
+    addAndMakeVisible (matrixGrid);
+    addChildComponent (directGrid);
+
+    for (auto* tab : { &matrixTab, &directTab })
+    {
+        tab->setClickingTogglesState (true);
+        tab->setRadioGroupId (1);
+        addAndMakeVisible (*tab);
+    }
+    matrixTab.setTooltip ("Destinations that exist only in the matrix");
+    directTab.setTooltip ("Modulate the panel parameters directly");
+    matrixTab.onClick = [this] { showDirect (false); };
+    directTab.onClick = [this] { showDirect (true); };
+
+    clearAllButton.setTooltip ("Remove every route of this layer (both MATRIX and DIRECT MAPPING)");
     clearAllButton.onClick = [this] { engine.modMatrix (layer).clearAll(); };
-    clearSourceButton.onClick = [this]
+    closeButton.onClick = [this] { if (onClose != nullptr) onClose(); };
+    addAndMakeVisible (clearAllButton);
+    addAndMakeVisible (closeButton);
+
+    hint.setJustificationType (juce::Justification::centredLeft);
+    help.setJustificationType (juce::Justification::centredRight);
+    help.setText ("Drag a cell up/down to set it   |   double-click resets   |   x clears a row or column",
+                  juce::dontSendNotification);
+    for (auto* label : { &hint, &help })
     {
-        const int selected = sourceChoice.getSelectedId() - 1;
-        if (selected >= 0 && selected < ModMatrixData::sourceCount)
-            engine.modMatrix (layer).clearSource ((ModSource) selected);
-    };
-    clearTargetButton.onClick = [this]
-    {
-        const int selected = targetChoice.getSelectedId() - 1;
-        if (selected < 0)
-            return;
-        if (tabs.getCurrentTabIndex() == 0 && selected < ModMatrixData::targetCount)
-            engine.modMatrix (layer).clearTarget ((ModTarget) selected);
-        else if (tabs.getCurrentTabIndex() == 1 && selected < ModMatrixData::directTargetCount)
-            engine.modMatrix (layer).clearDirectTarget ((DirectModTarget) selected);
-    };
-    tabs.onTabChanged = [this] (int tabIndex)
-    {
-        targetChoice.clear (juce::dontSendNotification);
-        const int count = tabIndex == 0 ? ModMatrixData::targetCount : ModMatrixData::directTargetCount;
-        for (int i = 0; i < count; ++i)
-            targetChoice.addItem (tabIndex == 0 ? ModMatrix::getTargetName ((ModTarget) i)
-                                               : ModMatrix::getDirectTargetName ((DirectModTarget) i), i + 1);
-        targetChoice.setSelectedId (1, juce::dontSendNotification);
-    };
+        label->setColour (juce::Label::textColourId, kTextDim);
+        label->setFont (juce::Font (juce::FontOptions (12.5f)));
+        addAndMakeVisible (*label);
+    }
+
+    setLayer (initialLayer);
+    showDirect (false);
 }
 
 void ModMatrixPage::setLayer (Layer selectedLayer)
 {
     layer = selectedLayer;
-    for (int i = 0; i < tabs.getNumTabs(); ++i)
-        if (auto* grid = dynamic_cast<ModMatrixGrid*> (tabs.getTabContentComponent (i)))
-            grid->setMatrix (engine.modMatrix (layer));
+    matrixGrid.setMatrix (engine.modMatrix (layer));
+    directGrid.setMatrix (engine.modMatrix (layer));
+    for (auto* tab : { &matrixTab, &directTab })
+        tab->setColour (juce::TextButton::buttonOnColourId, accentForLayer (layer).darker (0.45f));
+    repaint();
+}
+
+void ModMatrixPage::showDirect (bool direct)
+{
+    matrixTab.setToggleState (! direct, juce::dontSendNotification);
+    directTab.setToggleState (direct, juce::dontSendNotification);
+    matrixGrid.setVisible (! direct);
+    directGrid.setVisible (direct);
+    hint.setText (direct ? "Rows: sources. Columns: panel parameters. Greyed cells already have a knob on the panel."
+                         : "Rows: sources. Columns: destinations that exist only in the matrix.",
+                  juce::dontSendNotification);
+}
+
+void ModMatrixPage::paint (juce::Graphics& g)
+{
+    const auto accent = accentForLayer (layer);
+    paintPageFrame (g, getLocalBounds(), accent);
+    paintPageTitle (g, pageContent (getLocalBounds()).removeFromTop (kPageHeader), "MOD MATRIX",
+                    layer == Layer::upper ? "UPPER" : "LOWER", accent);
 }
 
 void ModMatrixPage::resized()
 {
-    auto area = getLocalBounds().reduced (10);
-    auto controls = area.removeFromTop (36);
-    closeButton.setBounds (controls.removeFromRight (90));
-    controls.removeFromRight (8);
-    clearTargetButton.setBounds (controls.removeFromRight (120));
-    targetChoice.setBounds (controls.removeFromRight (190).reduced (2));
-    controls.removeFromRight (8);
-    clearSourceButton.setBounds (controls.removeFromRight (125));
-    sourceChoice.setBounds (controls.removeFromRight (170).reduced (2));
-    controls.removeFromRight (8);
-    clearAllButton.setBounds (controls.removeFromRight (100));
+    auto area = pageContent (getLocalBounds());
+    auto header = area.removeFromTop (kPageHeader);
+    clearAllButton.setBounds (header.removeFromRight (110));
+    auto tabs = juce::Rectangle<int> (0, 0, 2 * 170 + 4, header.getHeight()).withCentre ({ getLocalBounds().getCentreX(), header.getCentreY() });
+    matrixTab.setBounds (tabs.removeFromLeft (170));
+    tabs.removeFromLeft (4);
+    directTab.setBounds (tabs);
+
     area.removeFromTop (8);
-    tabs.setBounds (area);
+    auto info = area.removeFromTop (22);
+    help.setBounds (info.removeFromRight (580));
+    hint.setBounds (info);
+    area.removeFromTop (8);
+
+    closeButton.setBounds (area.removeFromBottom (kPageFooter).withSizeKeepingCentre (140, 32));
+    area.removeFromBottom (8);
+    matrixGrid.setBounds (area);
+    directGrid.setBounds (area);
 }
 
-WaveBrowserPage::WaveBrowserPage (SynthEngine& e)
+//==============================================================================
+WaveSlotGrid::WaveSlotGrid (SynthEngine& e)
     : engine (e)
 {
+    setRepaintsOnMouseActivity (true);
+    setMouseCursor (juce::MouseCursor::PointingHandCursor);
+}
+
+juce::Rectangle<int> WaveSlotGrid::tileBounds (int slot) const noexcept
+{
+    const int rows = (WaveBank::kNumAltWaves + kColumns - 1) / kColumns;
+    const float w = (float) getWidth() / (float) kColumns, h = (float) getHeight() / (float) rows;
+    return juce::Rectangle<float> ((float) (slot % kColumns) * w, (float) (slot / kColumns) * h, w, h).toNearestInt().reduced (3);
+}
+
+void WaveSlotGrid::paint (juce::Graphics& g)
+{
+    const auto& bank = engine.getWaveBank();
+    const auto& names = WaveBank::altWaveNames();
+    const auto mouse = isMouseOver() ? getMouseXYRelative() : juce::Point<int> (-100, -100);
+    for (int slot = 0; slot < WaveBank::kNumAltWaves; ++slot)
+    {
+        const auto r = tileBounds (slot);
+        const bool isSelected = slot == selected, hot = r.contains (mouse);
+        g.setColour (isSelected ? kPerfAccent.withAlpha (0.14f) : kBackground.withAlpha (hot ? 0.9f : 0.5f));
+        g.fillRoundedRectangle (r.toFloat(), 5.0f);
+        g.setColour (isSelected ? kPerfAccent : hot ? kTextDim : kOutline);
+        g.drawRoundedRectangle (r.toFloat().reduced (0.5f), 5.0f, isSelected ? 1.5f : 1.0f);
+
+        auto inner = r.reduced (9, 6);
+        auto top = inner.removeFromTop (16);
+        g.setFont (juce::Font (juce::FontOptions (11.0f)).boldened());
+        g.setColour (isSelected ? kPerfAccent : kTextDim);
+        g.drawText (juce::String (slot + 1).paddedLeft ('0', 2), top.removeFromLeft (22), juce::Justification::centredLeft);
+        g.setFont (juce::Font (juce::FontOptions (12.5f)).withStyle (isSelected ? juce::Font::bold : juce::Font::plain));
+        g.setColour (kText);
+        g.drawFittedText (names[slot], top, juce::Justification::centredLeft, 1, 0.8f);
+        paintCycle (g, bank.altCycle (slot), inner.toFloat().reduced (0.0f, 4.0f),
+                    isSelected ? kPerfAccent : kTextDim, 1.5f, 128);
+    }
+}
+
+void WaveSlotGrid::mouseDown (const juce::MouseEvent& event)
+{
+    for (int slot = 0; slot < WaveBank::kNumAltWaves; ++slot)
+        if (tileBounds (slot).contains (event.getPosition()))
+        {
+            selected = slot;
+            repaint();
+            if (onSelect != nullptr)
+                onSelect (slot);
+            return;
+        }
+}
+
+//==============================================================================
+WaveBrowserPage::WaveBrowserPage (SynthEngine& e)
+    : engine (e), slots (e)
+{
     setOpaque (true);
-    for (int i = 0; i < WaveBank::kNumAltWaves; ++i)
-        slotChoice.addItem (juce::String (i + 1) + ": " + WaveBank::altWaveNames()[i], i + 1);
-    slotChoice.setSelectedId (1, juce::dontSendNotification);
-    slotChoice.onChange = [this] { repaint(); };
-    status.setText ("Import one periodic cycle into the selected slot.", juce::dontSendNotification);
-    status.setJustificationType (juce::Justification::centred);
-    status.setColour (juce::Label::textColourId, kText);
+    slots.onSelect = [this] (int) { repaint(); };
+    status.setText ("Pick a slot, then import one waveform cycle (.ws6, .wav, .aif) into it or export it as .ws6.",
+                    juce::dontSendNotification);
+    status.setJustificationType (juce::Justification::topLeft);
+    status.setColour (juce::Label::textColourId, kTextDim);
+    status.setFont (juce::Font (juce::FontOptions (12.5f)));
+    importButton.setTooltip ("Replace the selected slot with one cycle from a .ws6, .wav or .aif file");
+    exportButton.setTooltip ("Save the selected slot as a .ws6 file");
     for (juce::Component* component : std::array<juce::Component*, 5> {
-             &slotChoice, &importButton, &exportButton, &closeButton, &status })
+             &slots, &importButton, &exportButton, &closeButton, &status })
         addAndMakeVisible (*component);
 
     importButton.onClick = [this]
@@ -559,10 +880,10 @@ WaveBrowserPage::WaveBrowserPage (SynthEngine& e)
             if (file == juce::File())
                 return;
             juce::String error;
-            if (! engine.requestWaveImport (slotChoice.getSelectedId() - 1, file, &error))
+            if (! engine.requestWaveImport (slots.getSelected(), file, &error))
                 juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Wave import failed", error);
             else
-                status.setText ("Building mip tables off the audio thread…", juce::dontSendNotification);
+                status.setText ("Building mip tables off the audio thread...", juce::dontSendNotification);
         });
     };
     exportButton.onClick = [this]
@@ -576,7 +897,7 @@ WaveBrowserPage::WaveBrowserPage (SynthEngine& e)
             if (file == juce::File())
                 return;
             juce::String error;
-            if (! engine.exportWave (slotChoice.getSelectedId() - 1, file, &error))
+            if (! engine.exportWave (slots.getSelected(), file, &error))
                 juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Wave export failed", error);
         });
     };
@@ -590,7 +911,7 @@ void WaveBrowserPage::timerCallback()
     {
         case SynthEngine::WaveImportState::idle: break;
         case SynthEngine::WaveImportState::building:
-            status.setText ("Building mip tables off the audio thread…", juce::dontSendNotification);
+            status.setText ("Building mip tables off the audio thread...", juce::dontSendNotification);
             break;
         case SynthEngine::WaveImportState::ready:
             status.setText ("Import complete. The new table is active.", juce::dontSendNotification);
@@ -604,53 +925,52 @@ void WaveBrowserPage::timerCallback()
 
 void WaveBrowserPage::paint (juce::Graphics& g)
 {
-    g.fillAll (kBackground);
-    auto area = getLocalBounds().reduced (20);
-    area.removeFromTop (190);
-    auto waveBox = area.withSizeKeepingCentre (juce::jmin (860, area.getWidth()), juce::jmin (320, area.getHeight())).toFloat();
-    if (waveBox.getHeight() < 40.0f)
-        return;
+    paintPageFrame (g, getLocalBounds(), kPerfAccent);
+    auto header = pageContent (getLocalBounds()).removeFromTop (kPageHeader);
+    paintPageTitle (g, header, "WAVE BANK", juce::String (WaveBank::kNumAltWaves) + " SLOTS", kPerfAccent);
+    g.setColour (kTextDim);
+    g.setFont (juce::Font (juce::FontOptions (12.5f)));
+    g.drawText ("Alternative waveforms for DDS1 (Alt Wave A / B), shared by both layers",
+                header.withTrimmedLeft (kPageTitleWidth), juce::Justification::centredRight);
 
-    g.setColour (kPanel);
-    g.fillRoundedRectangle (waveBox, 8.0f);
+    if (preview.isEmpty())
+        return;
+    const int slot = slots.getSelected();
+    auto r = preview;
+    auto nameRow = r.removeFromTop (30);
+    g.setFont (juce::Font (juce::FontOptions (12.0f)).boldened());
+    g.setColour (kPerfAccent);
+    g.drawText ("SLOT " + juce::String (slot + 1).paddedLeft ('0', 2), nameRow.removeFromLeft (64), juce::Justification::centredLeft);
+    g.setFont (juce::Font (juce::FontOptions (20.0f)).boldened());
+    g.setColour (kText);
+    g.drawFittedText (WaveBank::altWaveNames()[slot], nameRow, juce::Justification::centredLeft, 1, 0.8f);
+
+    r.removeFromTop (8);
+    const auto box = r.toFloat();
+    g.setColour (kBackground);
+    g.fillRoundedRectangle (box, 8.0f);
     g.setColour (kOutline);
-    g.drawRoundedRectangle (waveBox, 8.0f, 1.0f);
-    g.drawHorizontalLine (juce::roundToInt (waveBox.getCentreY()), waveBox.getX() + 8.0f, waveBox.getRight() - 8.0f);
-
-    const int slot = juce::jlimit (0, WaveBank::kNumAltWaves - 1, slotChoice.getSelectedId() - 1);
-    const auto& cycle = engine.getWaveBank().altCycle (slot);
-    if (cycle.empty())
-        return;
-
-    const auto plot = waveBox.reduced (16.0f, 18.0f);
-    juce::Path path;
-    constexpr int points = 512;
-    for (int i = 0; i < points; ++i)
-    {
-        const float normX = (float) i / (float) (points - 1);
-        const size_t idx = (size_t) juce::jlimit (0, (int) cycle.size() - 1, (int) (normX * (float) (cycle.size() - 1)));
-        const float x = plot.getX() + normX * plot.getWidth();
-        const float y = plot.getCentreY() - juce::jlimit (-1.0f, 1.0f, cycle[idx]) * (plot.getHeight() * 0.45f);
-        if (i == 0) path.startNewSubPath (x, y);
-        else        path.lineTo (x, y);
-    }
-    g.setColour (kUpperAccent);
-    g.strokePath (path, juce::PathStrokeType (2.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+    g.drawRoundedRectangle (box.reduced (0.5f), 8.0f, 1.0f);
+    paintCycle (g, engine.getWaveBank().altCycle (slot), box.reduced (18.0f, 24.0f), kPerfAccent, 2.5f, 512);
 }
 
 void WaveBrowserPage::resized()
 {
-    auto area = getLocalBounds().reduced (20);
-    closeButton.setBounds (area.removeFromTop (30).removeFromRight (84));
-    area.removeFromTop (8);
-    slotChoice.setBounds (area.removeFromTop (30).withSizeKeepingCentre (200, 30));
-    area.removeFromTop (8);
-    auto buttons = area.removeFromTop (30).withSizeKeepingCentre (300, 30);
-    importButton.setBounds (buttons.removeFromLeft (142));
-    buttons.removeFromLeft (12);
-    exportButton.setBounds (buttons.removeFromLeft (146));
+    auto area = pageContent (getLocalBounds());
+    area.removeFromTop (kPageHeader + 12);
+    closeButton.setBounds (area.removeFromBottom (kPageFooter).withSizeKeepingCentre (140, 32));
+    area.removeFromBottom (8);
+
+    slots.setBounds (area.removeFromLeft (area.getWidth() * 3 / 5));
+    area.removeFromLeft (24);
+    preview = area.removeFromTop (30 + 8 + 340);
+    area.removeFromTop (16);
+    auto buttons = area.removeFromTop (32);
+    importButton.setBounds (buttons.removeFromLeft (150));
+    buttons.removeFromLeft (8);
+    exportButton.setBounds (buttons.removeFromLeft (170));
     area.removeFromTop (10);
-    status.setBounds (area.removeFromTop (36));
+    status.setBounds (area.removeFromTop (44));
 }
 
 //==============================================================================
@@ -819,6 +1139,9 @@ NSynthAudioProcessorEditor::NSynthAudioProcessorEditor (NSynthAudioProcessor& p)
         sizeBox.addItem (juce::String (pct) + " %", pct);
     sizeBox.onChange = [this] { if (sizeBox.getSelectedId() > 0) setScale ((float) sizeBox.getSelectedId() / 100.0f); };
     content.addAndMakeVisible (sizeBox);
+    // The full-size pages cover the header, including the size box added after them.
+    modMatrixPage->toFront (false);
+    waveBrowserPage->toFront (false);
 
     selectBottomLayer (Layer::upper);
     updateSwitchedControls();

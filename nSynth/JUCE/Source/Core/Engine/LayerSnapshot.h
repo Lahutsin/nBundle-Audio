@@ -28,7 +28,7 @@ struct LayerSnapshot
     // VCF
     float hpfHz { 10.0f }, lpfHz { 25000.0f }, res { 0.0f };
     Drive drive { Drive::off };
-    FilterType vcfType { FilterType::moog24 };
+    FilterType vcfType { FilterType::ladder24 };
     float vcfEnv { 0.0f };
     EnvSource vcfEnvSource { EnvSource::env1 };
     float vcfLfo1 { 0.0f }, vcfDds2 { 0.0f };

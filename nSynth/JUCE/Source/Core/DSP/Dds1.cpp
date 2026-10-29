@@ -31,7 +31,7 @@ void Dds1::coreGains (SuperMode mode, float& centroidGain, float& sisterGain) no
         return;
     }
 
-    // JP-8000 super saw mix curves (centre and side levels) at mix 0.5 ("1/2") and 1.0 ("On"),
+    // Super saw mix curves (centre and side levels) at mix 0.5 ("1/2") and 1.0 ("On"),
     // then RMS-normalised so the level into the filter stays comparable.
     const float x = mode == SuperMode::half ? 0.5f : 1.0f;
     const float c = -0.55366f * x + 0.99785f;

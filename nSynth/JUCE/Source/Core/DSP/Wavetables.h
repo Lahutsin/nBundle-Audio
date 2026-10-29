@@ -73,8 +73,8 @@ public:
 
     // DDS1 classic cycles (0 sine, 1 saw, 2 square, 3 triangle) with analog-style shapes; DDS2 uses the same shapes.
     static std::vector<float> makeClassicCycle (int index);
-    static constexpr double kRampCurve = 0.25;     // Minimoog-style saw: slightly convex capacitor ramp
-    static constexpr double kSquareDroop = 0.06;   // Prophet-style square: AC-coupled plateau droop
+    static constexpr double kRampCurve = 0.25;     // Analog saw: slightly convex capacitor ramp
+    static constexpr double kSquareDroop = 0.06;   // Analog square: AC-coupled plateau droop
     static double analogRamp (double p) noexcept { return (1.0 - std::exp (-kRampCurve * p)) / (1.0 - std::exp (-kRampCurve)); }
     static double roundTriangle (double t) noexcept { return 1.5 * t - 0.5 * t * t * t; }
 

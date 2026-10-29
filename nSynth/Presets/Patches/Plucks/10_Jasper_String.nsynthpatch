@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 
-<NSYNTH_PATCH layer="0" stateVersion="4" factoryContent="1" name="Jupiter String"
+<NSYNTH_PATCH layer="0" stateVersion="4" factoryContent="1" name="Jasper String"
               category="Plucks">
   <MOD_MATRIX schemaVersion="2" layer="0"/>
   <PARAM id="up_dds1_wave" value="0.2000000029802322"/>

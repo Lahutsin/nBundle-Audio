@@ -71,24 +71,49 @@ private:
     std::vector<std::vector<ParamControl*>> cells;
 };
 
+// One mod matrix amount (-1..1): a bar growing from the centre, drag up/down to change it,
+// double-click to reset to 0. Disabled cells are routes the layer panel already provides.
+class ModAmountCell : public juce::Slider
+{
+public:
+    ModAmountCell();
+    void paint (juce::Graphics&) override;
+};
+
+// Sources (rows) x targets (columns). Row and column names show a clear button while they
+// carry any amount.
 class ModMatrixGrid : public juce::Component,
                       private juce::Timer
 {
 public:
     ModMatrixGrid (nsynth::ModMatrix& matrix, bool direct);
     void setMatrix (nsynth::ModMatrix& matrix);
+    void paint (juce::Graphics&) override;
     void resized() override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseMove (const juce::MouseEvent&) override;
+    void mouseExit (const juce::MouseEvent&) override;
 
 private:
     void timerCallback() override;
+    int columnCount() const noexcept;
+    // Clear button hit by the point: row (source) >= 0 or column (target) >= 0, otherwise both -1.
+    std::pair<int, int> clearButtonAt (juce::Point<int> position) const noexcept;
+    void clearRow (int source);
+    void clearColumn (int target);
     float amountAt (int source, int target) const noexcept;
     bool setAmountAt (int source, int target, float amount);
+    juce::String targetName (int target) const;
+    static juce::Rectangle<int> rowClearButton (juce::Rectangle<int> label) noexcept;
+    static juce::Rectangle<int> columnClearButton (juce::Rectangle<int> label) noexcept;
 
     nsynth::ModMatrix* matrix;
     const bool direct;
     bool updating { false };
-    std::vector<std::unique_ptr<juce::Label>> rowLabels, columnLabels;
-    std::vector<std::unique_ptr<juce::Slider>> cells;
+    std::vector<std::unique_ptr<ModAmountCell>> cells;
+    std::vector<juce::Rectangle<int>> rowLabels, columnLabels;
+    std::vector<bool> activeRows, activeColumns;
+    std::pair<int, int> hoveredClear { -1, -1 };
 };
 
 class ModMatrixPage : public juce::Component
@@ -96,28 +121,37 @@ class ModMatrixPage : public juce::Component
 public:
     ModMatrixPage (nsynth::SynthEngine& engine, nsynth::Layer layer);
     void setLayer (nsynth::Layer layer);
+    // false: the 8 matrix-only targets, true: direct mapping onto panel parameters.
+    void showDirect (bool direct);
+    void paint (juce::Graphics&) override;
     void resized() override;
     std::function<void()> onClose;
 
 private:
-    class Tabs final : public juce::TabbedComponent
-    {
-    public:
-        Tabs() : juce::TabbedComponent (juce::TabbedButtonBar::TabsAtTop) {}
-        std::function<void (int)> onTabChanged;
-        void currentTabChanged (int index, const juce::String&) override
-        {
-            if (onTabChanged != nullptr)
-                onTabChanged (index);
-        }
-    };
-
     nsynth::SynthEngine& engine;
     nsynth::Layer layer;
-    Tabs tabs;
-    juce::TextButton closeButton { "CLOSE" }, clearAllButton { "CLEAR ALL" },
-                     clearSourceButton { "CLEAR SOURCE" }, clearTargetButton { "CLEAR TARGET" };
-    juce::ComboBox sourceChoice, targetChoice;
+    ModMatrixGrid matrixGrid, directGrid;
+    juce::TextButton matrixTab { "MATRIX" }, directTab { "DIRECT MAPPING" },
+                     clearAllButton { "CLEAR ALL" }, closeButton { "CLOSE" };
+    juce::Label hint, help;
+};
+
+// The 32 alternative waveforms as tiles (number, cycle, name); click selects one.
+class WaveSlotGrid : public juce::Component
+{
+public:
+    explicit WaveSlotGrid (nsynth::SynthEngine& engine);
+    void paint (juce::Graphics&) override;
+    void mouseDown (const juce::MouseEvent&) override;
+    int getSelected() const noexcept { return selected; }
+    std::function<void (int)> onSelect;
+
+    static constexpr int kColumns = 4;
+
+private:
+    juce::Rectangle<int> tileBounds (int slot) const noexcept;
+    nsynth::SynthEngine& engine;
+    int selected { 0 };
 };
 
 class WaveBrowserPage : public juce::Component,
@@ -132,8 +166,9 @@ public:
 private:
     void timerCallback() override;
     nsynth::SynthEngine& engine;
-    juce::ComboBox slotChoice;
-    juce::TextButton importButton { "IMPORT" }, exportButton { "EXPORT .WS6" }, closeButton { "CLOSE" };
+    WaveSlotGrid slots;
+    juce::Rectangle<int> preview;
+    juce::TextButton importButton { "IMPORT..." }, exportButton { "EXPORT .WS6..." }, closeButton { "CLOSE" };
     juce::Label status;
     std::unique_ptr<juce::FileChooser> chooser;
 };

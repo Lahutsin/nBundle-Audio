@@ -3,8 +3,10 @@
 //   nSynthTests --list               list test names
 //   nSynthTests --only "<name>"      run a single test
 //   nSynthTests --dump-params <file> write the Markdown parameter table (docs/02-PARAMETERS.md)
-//   nSynthTests --snapshot <file.png> [scale] [--browser]  render the editor (optionally with the
-//                                    preset browser open) to a PNG (docs/Plugin.png)
+//   nSynthTests --snapshot <file.png> [scale] [--browser | --matrix | --direct | --waves]
+//                                    render the editor (optionally with the preset browser, the mod
+//                                    matrix, its direct mapping page or the wave bank open) to a PNG
+//                                    (docs/Plugin.png, docs/PresetBrowser.png, docs/ModMatrix*.png, docs/WaveBank.png)
 #include <juce_gui_basics/juce_gui_basics.h>
 #include "Core/Params/ParamRegistry.h"
 #include "PluginProcessor.h"
@@ -92,6 +94,26 @@ int main (int argc, char* argv[])
             editor->openPresetBrowser (nSynth::PresetKind::patch);
             editor->getPresetBrowser().loadRow (2, false);
         }
+        if (args.contains ("--matrix") || args.contains ("--direct"))
+        {
+            // Example routes so the screenshot shows filled cells, clear buttons and both signs.
+            auto& matrix = proc.getEngine().modMatrix (Layer::upper);
+            matrix.setFixedAmount (ModSource::env1, ModTarget::waveMod, 0.6f);
+            matrix.setFixedAmount (ModSource::velocity, ModTarget::hpfCutoff, -0.3f);
+            matrix.setFixedAmount (ModSource::expression, ModTarget::oscillatorMix, 0.5f);
+            matrix.setFixedAmount (ModSource::ribbon, ModTarget::crossMod, 0.75f);
+            matrix.setFixedAmount (ModSource::lfo2, ModTarget::delayTime, -0.2f);
+            matrix.setDirectAmount (ModSource::velocity, DirectModTarget::lpfCutoff, 0.45f);
+            matrix.setDirectAmount (ModSource::timbre, DirectModTarget::lpfCutoff, 0.8f);
+            matrix.setDirectAmount (ModSource::polyAftertouch, DirectModTarget::vcaLfo1Amount, 0.6f);
+            matrix.setDirectAmount (ModSource::noteNumber, DirectModTarget::env2Decay, -0.35f);
+            matrix.setDirectAmount (ModSource::expression, DirectModTarget::delayMix, 0.5f);
+            editor->showModMatrixPage (true);
+            editor->getModMatrixPage().setLayer (Layer::upper);
+            editor->getModMatrixPage().showDirect (args.contains ("--direct"));
+        }
+        if (args.contains ("--waves"))
+            editor->showWaveBrowserPage (true);
         const auto image = editor->createComponentSnapshot (editor->getLocalBounds(), true, 1.0f);
         auto file = juce::File::getCurrentWorkingDirectory().getChildFile (path);
         file.deleteFile();

@@ -12,7 +12,7 @@ public:
     static constexpr double sr = 176400.0;
 
     double gainAt (double freq, float hpf, float lpf, float res, Drive d = Drive::off, float amp = 0.02f,
-                   FilterType type = FilterType::moog24)
+                   FilterType type = FilterType::ladder24)
     {
         VoiceFilter f; f.setSampleRate (sr); f.setParameters (hpf, lpf, res, d, type);
         const int n = (int) sr;
@@ -36,10 +36,10 @@ public:
 
     void runTest() override
     {
-        static constexpr FilterType allTypes[] = { FilterType::moog24, FilterType::moog12, FilterType::jupiter24, FilterType::sem12 };
+        static constexpr FilterType allTypes[] = { FilterType::ladder24, FilterType::ladder12, FilterType::cascade24, FilterType::svf12 };
 
-        beginTest ("Moog 24 / Jupiter 24: flat passband, -12 dB at cutoff, -24 dB/oct above");
-        for (auto type : { FilterType::moog24, FilterType::jupiter24 })
+        beginTest ("Ladder 24 / Cascade 24: flat passband, -12 dB at cutoff, -24 dB/oct above");
+        for (auto type : { FilterType::ladder24, FilterType::cascade24 })
         {
             const float fc = 1000.0f;
             expectWithinAbsoluteError (toDb (gainAt (50.0, 10.0f, fc, 0.0f, Drive::off, 0.02f, type)), 0.0, 0.5);
@@ -49,8 +49,8 @@ public:
             expectWithinAbsoluteError (slope, -24.0, 1.5);
         }
 
-        beginTest ("Moog 12 / SEM 12: flat passband and -12 dB/oct above the cutoff");
-        for (auto type : { FilterType::moog12, FilterType::sem12 })
+        beginTest ("Ladder 12 / SVF 12: flat passband and -12 dB/oct above the cutoff");
+        for (auto type : { FilterType::ladder12, FilterType::svf12 })
         {
             const float fc = 1000.0f;
             expectWithinAbsoluteError (toDb (gainAt (60.0, 10.0f, fc, 0.0f, Drive::off, 0.02f, type)), 0.0, 0.5);
@@ -68,7 +68,7 @@ public:
         }
 
         beginTest ("RES at maximum self-oscillates at the cutoff frequency (sine-like), every type");
-        for (auto type : { FilterType::moog24, FilterType::jupiter24, FilterType::sem12 })
+        for (auto type : { FilterType::ladder24, FilterType::cascade24, FilterType::svf12 })
             for (float fc : { 220.0f, 1000.0f, 4000.0f })
             {
                 VoiceFilter f; f.setSampleRate (sr); f.setParameters (10.0f, fc, 1.0f, Drive::off, type);
@@ -106,18 +106,18 @@ public:
             expectGreaterThan (two, one * 1.5);
         }
 
-        beginTest ("resonance keeps the low end: ladder partly compensated, SEM without loss");
+        beginTest ("resonance keeps the low end: ladder partly compensated, SVF without loss");
         {
             auto loss = [&] (FilterType type)
             {
                 return toDb (gainAt (100.0, 10.0f, 2000.0f, 0.9f, Drive::off, 0.02f, type))
                      - toDb (gainAt (100.0, 10.0f, 2000.0f, 0.0f, Drive::off, 0.02f, type));
             };
-            const double moog = loss (FilterType::moog24);
-            expectLessThan (moog, -2.0);       // still a ladder: some thinning with resonance
-            expectGreaterThan (moog, -8.0);    // ... but far less than the uncompensated -13.5 dB
-            expectGreaterThan (loss (FilterType::jupiter24), -8.0);
-            expectWithinAbsoluteError (loss (FilterType::sem12), 0.0, 1.5);
+            const double ladder = loss (FilterType::ladder24);
+            expectLessThan (ladder, -2.0);       // still a ladder: some thinning with resonance
+            expectGreaterThan (ladder, -8.0);    // ... but far less than the uncompensated -13.5 dB
+            expectGreaterThan (loss (FilterType::cascade24), -8.0);
+            expectWithinAbsoluteError (loss (FilterType::svf12), 0.0, 1.5);
         }
     }
 };
