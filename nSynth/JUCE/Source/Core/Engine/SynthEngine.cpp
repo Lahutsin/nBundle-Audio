@@ -166,8 +166,11 @@ void SynthEngine::process (juce::AudioBuffer<float>& mix, juce::AudioBuffer<floa
     }
     renderSegmentsCombined (pos, n - pos);
 
-    upper.finishBlock (upperBuffer, n);
-    lower.finishBlock (lowerBuffer, n);
+    // Both dry layer signals first: either compressor may key on the other layer.
+    upper.finishVoices (n);
+    lower.finishVoices (n);
+    upper.applyEffects (upperBuffer, n, &lower.getKeyBuffer());
+    lower.applyEffects (lowerBuffer, n, &upper.getKeyBuffer());
 
     const float master = juce::Decibels::decibelsToGain (perf.masterDb, -60.0f);
     for (int ch = 0; ch < juce::jmin (2, mix.getNumChannels()); ++ch)

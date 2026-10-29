@@ -4,79 +4,38 @@ namespace nsynth
 {
 namespace
 {
-float directParameterValue (const LayerSnapshot& p, DirectModTarget target) noexcept
+// Parameter indices the render loop needs to know about, resolved once.
+struct ParamIndices
 {
-    switch (target)
-    {
-        case DirectModTarget::dds2Tune: return p.dds2Tune;
-        case DirectModTarget::lpfCutoff: return p.lpfHz;
-        case DirectModTarget::vcfEnvAmount: return p.vcfEnv;
-        case DirectModTarget::vcfLfo1Amount: return p.vcfLfo1;
-        case DirectModTarget::vcfDds2Amount: return p.vcfDds2;
-        case DirectModTarget::vcaEnvLevel: return p.vcaEnv;
-        case DirectModTarget::vcaLfo1Amount: return p.vcaLfo1;
-        case DirectModTarget::vcaDds2Amount: return p.vcaDds2;
-        case DirectModTarget::env1Attack: return p.env1Attack;
-        case DirectModTarget::env1Sustain: return p.env1Sustain;
-        case DirectModTarget::env1Release: return p.env1Release;
-        case DirectModTarget::env2Attack: return p.env2Attack;
-        case DirectModTarget::env2Decay: return p.env2Decay;
-        case DirectModTarget::env2Sustain: return p.env2Sustain;
-        case DirectModTarget::env2Release: return p.env2Release;
-        case DirectModTarget::lfo1Delay: return p.lfo1Delay;
-        case DirectModTarget::lfo1LrPhase: return p.lfo1LrPhase;
-        case DirectModTarget::lfo2Rate: return p.lfo2Rate;
-        case DirectModTarget::lfo2Delay: return p.lfo2Delay;
-        case DirectModTarget::ddsModLfo1Amount: return p.modLfo1;
-        case DirectModTarget::pwDetune: return p.pwDetune;
-        case DirectModTarget::portamento: return p.portamento;
-        case DirectModTarget::delayMix: return p.delayMix;
-        case DirectModTarget::delayFeedback: return p.delayFeedback;
-        case DirectModTarget::count: break;
-    }
-    return 0.0f;
-}
+    int lfo2Rate, lfo2RateMod, portamento;
+    std::array<int, 2> msegTime;
+    std::array<bool, kLayerParamCount> envelope {};
 
-void setDirectParameterValue (LayerSnapshot& p, DirectModTarget target, float value) noexcept
-{
-    switch (target)
+    ParamIndices()
+        : lfo2Rate (findLayerSpecIndex (pid::lfo2Rate)),
+          lfo2RateMod (findLayerSpecIndex (pid::lfo2RateMod)),
+          portamento (findLayerSpecIndex (pid::portamento)),
+          msegTime { findLayerSpecIndex (pid::mseg1Time), findLayerSpecIndex (pid::mseg2Time) }
     {
-        case DirectModTarget::dds2Tune: p.dds2Tune = value; break;
-        case DirectModTarget::lpfCutoff: p.lpfHz = value; break;
-        case DirectModTarget::vcfEnvAmount: p.vcfEnv = value; break;
-        case DirectModTarget::vcfLfo1Amount: p.vcfLfo1 = value; break;
-        case DirectModTarget::vcfDds2Amount: p.vcfDds2 = value; break;
-        case DirectModTarget::vcaEnvLevel: p.vcaEnv = value; break;
-        case DirectModTarget::vcaLfo1Amount: p.vcaLfo1 = value; break;
-        case DirectModTarget::vcaDds2Amount: p.vcaDds2 = value; break;
-        case DirectModTarget::env1Attack: p.env1Attack = value; break;
-        case DirectModTarget::env1Sustain: p.env1Sustain = value; break;
-        case DirectModTarget::env1Release: p.env1Release = value; break;
-        case DirectModTarget::env2Attack: p.env2Attack = value; break;
-        case DirectModTarget::env2Decay: p.env2Decay = value; break;
-        case DirectModTarget::env2Sustain: p.env2Sustain = value; break;
-        case DirectModTarget::env2Release: p.env2Release = value; break;
-        case DirectModTarget::lfo1Delay: p.lfo1Delay = value; break;
-        case DirectModTarget::lfo1LrPhase: p.lfo1LrPhase = value; break;
-        case DirectModTarget::lfo2Rate: p.lfo2Rate = value; break;
-        case DirectModTarget::lfo2Delay: p.lfo2Delay = value; break;
-        case DirectModTarget::ddsModLfo1Amount: p.modLfo1 = value; break;
-        case DirectModTarget::pwDetune: p.pwDetune = value; break;
-        case DirectModTarget::portamento: p.portamento = value; break;
-        case DirectModTarget::delayMix: p.delayMix = value; break;
-        case DirectModTarget::delayFeedback: p.delayFeedback = value; break;
-        case DirectModTarget::count: break;
+        for (auto* suffix : { pid::env1AttackHold, pid::env1Attack, pid::env1DecayHold, pid::env1Decay, pid::env1Sustain,
+                              pid::env1Release, pid::env2Attack, pid::env2DecayHold, pid::env2Decay, pid::env2Sustain,
+                              pid::env2Release })
+            envelope[(size_t) findLayerSpecIndex (suffix)] = true;
     }
-}
-
-const std::array<const char*, ModMatrixData::directTargetCount> directParameterIds {
-    pid::dds2Tune, pid::lpf, pid::vcfEnv, pid::vcfLfo1, pid::vcfDds2,
-    pid::vcaEnv, pid::vcaLfo1, pid::vcaDds2, pid::env1Attack, pid::env1Sustain,
-    pid::env1Release, pid::env2Attack, pid::env2Decay, pid::env2Sustain, pid::env2Release,
-    pid::lfo1Delay, pid::lfo1LrPhase, pid::lfo2Rate, pid::lfo2Delay, pid::modLfo1,
-    pid::pwDetune, pid::portamento, pid::delayMix, pid::delayFeedback
 };
+
+const ParamIndices& paramIndices()
+{
+    static const ParamIndices indices;
+    return indices;
 }
+
+double msegSeconds (const LayerSnapshot& s, int m, double bpm) noexcept
+{
+    return s.msegSync[(size_t) m] ? rates::msegDivisionBeats (toInt (s.msegDivision[(size_t) m])) * 60.0 / juce::jmax (1.0, bpm)
+                                  : (double) juce::jmax (0.001f, s.msegTime[(size_t) m]);
+}
+} // namespace
 
 float Voice::rangeOffset (Dds1Range r) noexcept
 {
@@ -141,6 +100,7 @@ void Voice::setSampleRate (double sr)
     dds2.setSampleRate (sr);
     filter.setSampleRate (sr);
     filter.reset();
+    filter2.setSampleRate (sr);
     for (auto* e : { &env1, &env2, &fixedEnv })
         e->setSampleRate (sr);
     lfo1.setSampleRate (sr);
@@ -195,6 +155,16 @@ void Voice::triggerEnvelopes() noexcept
     fixedEnv.noteOn();
 }
 
+void Voice::restartMsegs (const LayerSnapshot& p, const std::array<double, 2>& freePhase) noexcept
+{
+    // ENV and LOOP start from the beginning at every (re)trigger; FREE joins the layer clock.
+    for (size_t m = 0; m < 2; ++m)
+    {
+        msegPhase[m] = p.msegMode[m] == MsegMode::free ? freePhase[m] - std::floor (freePhase[m]) : 0.0;
+        msegHint[m] = 0;
+    }
+}
+
 bool Voice::isAudible() const noexcept
 {
     return active && getAmpEnvelope().getValue() > 1.0e-3f;
@@ -218,9 +188,11 @@ void Voice::start (const StartInfo& info, const LayerSnapshot& p)
     voiceGain = info.gain;
     side = info.side;
     age = info.age;
+    randomValue = rng.nextFloat();
     lastModSources.fill (0.0f);
     lastModSources[(size_t) ModSource::velocity] = juce::jlimit (0.0f, 1.0f, velocity);
     lastModSources[(size_t) ModSource::noteNumber] = juce::jlimit (0.0f, 1.0f, (float) note / 127.0f);
+    lastModSources[(size_t) ModSource::random] = randomValue;
     targetPitch = (double) note + (double) pitchOffset;
 
     if (p.portamento <= 0.0f || ! hasPlayed)
@@ -254,6 +226,7 @@ void Voice::start (const StartInfo& info, const LayerSnapshot& p)
         lfo2.setPhase (info.lfo2Phase);
         lfo1Ramp.noteOn();
         lfo2Ramp.noteOn();
+        restartMsegs (p, info.msegPhase);
         applyEnvelopeSettings (p);
         triggerEnvelopes();
     }
@@ -287,6 +260,12 @@ void Voice::changeNote (int newNote, float newVelocity, bool retrigger, uint64_t
         }
         lfo1Ramp.noteOn();
         lfo2Ramp.noteOn();
+        for (size_t m = 0; m < 2; ++m)
+            if (p.msegMode[m] != MsegMode::free)
+            {
+                msegPhase[m] = 0.0;
+                msegHint[m] = 0;
+            }
         applyEnvelopeSettings (p);
         triggerEnvelopes();
     }
@@ -381,6 +360,7 @@ void Voice::render (float* outL, float* outR, int startSample, int numSamples, c
         case Lfo1Wave::hf:
         case Lfo1Wave::hfTrack:    lfo1Shape = LfoShape::sine; break;
     }
+    lfo1Unipolar = Lfo::isUnipolar (lfo1Shape);
     static constexpr LfoShape lfo2Shapes[] = { LfoShape::sine, LfoShape::revSaw, LfoShape::sampleHold,
                                               LfoShape::square, LfoShape::saw, LfoShape::noise };
     const LfoShape lfo2Shape = lfo2Shapes[toInt (p.lfo2Wave)];
@@ -396,19 +376,10 @@ void Voice::render (float* outL, float* outR, int startSample, int numSamples, c
     }
     const bool toDds1 = p.modDest != OscTarget::dds2, toDds2 = p.modDest != OscTarget::dds1;
     const bool perfToDds1 = p.perfDest != OscTarget::dds2, perfToDds2 = p.perfDest != OscTarget::dds1;
-    const float env1PitchSt = p.modEnv1 * p.modEnv1 * 48.0f;
-    const float lfo2PitchSt = p.lfo2Dds * p.lfo2Dds * 12.0f;
-    const auto& ribbonRoutes = matrix.fixed[(size_t) ModSource::ribbon];
-    const auto& ribbonDirectRoutes = matrix.direct[(size_t) ModSource::ribbon];
-    const bool ribbonMapped = std::any_of (ribbonRoutes.begin(), ribbonRoutes.end(), [] (float x) { return x != 0.0f; })
-                           || std::any_of (ribbonDirectRoutes.begin(), ribbonDirectRoutes.end(), [] (float x) { return x != 0.0f; });
+    const bool ribbonMapped = matrix.sourceUsed[(size_t) ModSource::ribbon];
     const float ribbon = gate && ! ribbonMapped ? ctx.ribbonSemitones : 0.0f; // assigned ribbon becomes a matrix-only source
-    const float perfPitch = bendTotal * p.bendDds * (midiBendSensitivity / 2.0f);
 
     const float keyTrack = triStateAmount (p.vcfKeytrack);
-    const float dyn = juce::jlimit (0.0f, 1.0f, p.velSens);
-    const float velGain = 1.0f - dyn + dyn * velocity;
-    const float velOct = dyn * (velocity - 1.0f) * 3.0f;
     const float range1 = rangeOffset (p.dds1Range);
     const bool dds2IsLfo = p.dds2Range == Dds2Range::lfo;
     const float range2 = rangeOffset (p.dds2Range);
@@ -416,52 +387,64 @@ void Voice::render (float* outL, float* outR, int startSample, int numSamples, c
     const bool syncMode = ! dds2IsLfo && p.dds2Mode == Dds2Mode::syncOrSubSine;
     const bool subOn = dds2IsLfo && p.dds2Mode != Dds2Mode::normOrSubOff;
     const bool subSine = p.dds2Mode == Dds2Mode::syncOrSubSine;
-    static const auto hpfRange = makeRange (*findLayerSpec (pid::hpf));
-    static const auto resRange = makeRange (*findLayerSpec (pid::res));
-    static const auto env1DecayRange = makeRange (*findLayerSpec (pid::env1Decay));
-    static const auto directRanges = [] 
-    {
-        std::array<juce::NormalisableRange<float>, ModMatrixData::directTargetCount> result;
-        for (int i = 0; i < ModMatrixData::directTargetCount - 2; ++i)
-            if (const auto* spec = findLayerSpec (directParameterIds[(size_t) i]))
-                result[(size_t) i] = makeRange (*spec);
-        for (int i = ModMatrixData::directTargetCount - 2; i < ModMatrixData::directTargetCount; ++i)
-            if (const auto* spec = findLayerSpec (directParameterIds[(size_t) i]))
-                result[(size_t) i] = makeRange (*spec);
-        return result;
-    }();
-    std::array<bool, ModMatrixData::directTargetCount> hasDirectTarget {};
-    bool hasAnyDirectTarget = false;
-    bool hasEnvelopeDirectTarget = false;
-    for (int target = 0; target < ModMatrixData::directTargetCount; ++target)
-        for (int source = 0; source < ModMatrixData::sourceCount; ++source)
-            if (matrix.direct[(size_t) source][(size_t) target] != 0.0f)
-            {
-                hasDirectTarget[(size_t) target] = true;
-                hasAnyDirectTarget = true;
-                hasEnvelopeDirectTarget |= target >= (int) DirectModTarget::env1Attack
-                                        && target <= (int) DirectModTarget::env2Release;
-            }
-    std::array<bool, ModMatrixData::targetCount> hasFixedTarget {};
-    for (int target = 0; target < ModMatrixData::targetCount; ++target)
-        for (int source = 0; source < ModMatrixData::sourceCount; ++source)
-            hasFixedTarget[(size_t) target] |= matrix.fixed[(size_t) source][(size_t) target] != 0.0f;
-    const bool hasEnv1DecayRoute = hasFixedTarget[(size_t) ModTarget::env1Decay];
-    const auto modulatedFader = [&] (ModTarget target, float base, const std::array<float, ModMatrixData::sourceCount>& sources)
-    {
-        if (! hasFixedTarget[(size_t) target])
-            return juce::jlimit (0.0f, 1.0f, base);
-        for (int source = 0; source < ModMatrixData::sourceCount; ++source)
-            base += sources[(size_t) source] * matrix.fixed[(size_t) source][(size_t) target];
-        return juce::jlimit (0.0f, 1.0f, base);
-    };
+    const bool filter2On = p.f2Routing != Filter2Routing::off;
+    const bool filter2Serial = p.f2Routing == Filter2Routing::serial;
 
-    const float baseHpfNorm = hasFixedTarget[(size_t) ModTarget::hpfCutoff] ? hpfRange.convertTo0to1 (p.hpfHz) : 0.0f;
-    const float baseResNorm = hasFixedTarget[(size_t) ModTarget::lpfResonance] ? resRange.convertTo0to1 (p.res) : 0.0f;
-    const float lfo2RateScale = (float) std::exp2 (3.0 * p.lfo2RateMod * lfo2Push);
+    // ---- modulation slots ------------------------------------------------------
+    // Every active slot with a per-voice destination adds shape(source) x amount to the normalised
+    // value of its parameter. The modulated values live in `scratch`, a per-block copy of `p` whose
+    // modulated fields are rewritten every sample; everything below reads the parameters from `e`.
+    const auto& indices = paramIndices();
+    std::array<uint8_t, ModMatrixData::kMaxSlots> slotList {};
+    std::array<int8_t, ModMatrixData::kMaxSlots> slotDestination {};
+    std::array<int, ModMatrixData::kMaxSlots> destinations {};
+    std::array<float*, ModMatrixData::kMaxSlots> destinationField {};
+    std::array<const juce::NormalisableRange<float>*, ModMatrixData::kMaxSlots> destinationRange {};
+    std::array<float, ModMatrixData::kMaxSlots> baseNorm {}, offsets {};
+    std::array<int8_t, kLayerParamCount> destinationPosition;
+    int slotCount = 0, destinationCount = 0;
+    LayerSnapshot scratch;
+    const bool modulating = matrix.anyVoiceDestination;
+    if (modulating)
+    {
+        scratch = p;
+        destinationPosition.fill (-1);
+        for (int k = 0; k < matrix.activeSlotCount; ++k)
+        {
+            const int s = matrix.activeSlots[(size_t) k];
+            if (matrix.slotOnLayer[(size_t) s])
+                continue;
+            const int destination = matrix.slots[(size_t) s].destination;
+            auto& position = destinationPosition[(size_t) destination];
+            if (position < 0)
+            {
+                position = (int8_t) destinationCount;
+                destinations[(size_t) destinationCount] = destination;
+                destinationField[(size_t) destinationCount] = scratch.floatField (destination);
+                destinationRange[(size_t) destinationCount] = &getLayerParamRange (destination);
+                baseNorm[(size_t) destinationCount] = getLayerParamRange (destination).convertTo0to1 (*p.floatField (destination));
+                ++destinationCount;
+            }
+            slotList[(size_t) slotCount] = (uint8_t) s;
+            slotDestination[(size_t) slotCount] = position;
+            ++slotCount;
+        }
+    }
+    const LayerSnapshot& e = modulating ? scratch : p;
+    auto isModulated = [&] (int index) { return modulating && destinationPosition[(size_t) index] >= 0; };
+    bool envelopeTargets = false;
+    for (int d = 0; d < destinationCount; ++d)
+        envelopeTargets |= indices.envelope[(size_t) destinations[(size_t) d]];
+    const bool glideModulated = isModulated (indices.portamento);
+    const bool lfo2RateModulated = isModulated (indices.lfo2Rate) || isModulated (indices.lfo2RateMod);
+    const std::array<bool, 2> msegTimeModulated { isModulated (indices.msegTime[0]), isModulated (indices.msegTime[1]) };
+    const std::array<bool, 2> msegUsed { matrix.sourceUsed[(size_t) ModSource::mseg1], matrix.sourceUsed[(size_t) ModSource::mseg2] };
+
     const double baseGlideRate = p.portamento > 0.0f
                                ? 12.0 / ((double) portamentoSecondsPerOctave (p.portamento) * sampleRate) : 1.0e9;
-    const double baseLfo2Hz = rates::lowFrequencyHz (p.lfo2Rate) * (double) lfo2RateScale;
+    const double baseLfo2Hz = rates::lowFrequencyHz (p.lfo2Rate) * std::exp2 (3.0 * p.lfo2RateMod * lfo2Push);
+    std::array<double, 2> msegIncrement { 1.0 / (msegSeconds (p, 0, ctx.bpm) * sampleRate),
+                                          1.0 / (msegSeconds (p, 1, ctx.bpm) * sampleRate) };
 
     Envelope& ampEnv = ampEnvUsesEnv2 ? env2 : fixedEnv;
 
@@ -472,111 +455,125 @@ void Voice::render (float* outL, float* outR, int startSample, int numSamples, c
     d1s.altB = p.altB;
     d1s.mirrorDetune = side == Side::right;
 
-    // Only the fields addressed by direct routes differ from `p`; they are rewritten every
-    // sample from the panel values, so one copy per block is enough.
-    LayerSnapshot directScratch;
-    if (hasAnyDirectTarget)
-        directScratch = p;
-
     // The LFO1 rate (a pow() per sample) is only recomputed when its fader moves.
     const auto lfo1Wave = p.lfo1Wave;
     float lastLfo1Fader = -1.0f, lastLfo1Hz = 0.0f;
 
-    float l2 = 0.0f;
-    for (int i = startSample; i < startSample + numSamples; ++i)
+    // Sources are 0..1; LFOs, DDS2 and ribbon rest at 0.5. Evaluated per sample only while slots
+    // modulate this voice, otherwise once per block (editor, effect slots, note-on routes).
+    float lastE1 = 0.0f, lastE2 = 0.0f;
+    std::array<float, 2> lastMseg {};
+    auto makeSources = [&] () noexcept
     {
-        // ---- modulators ----------------------------------------------------
-        if (hasEnv1DecayRoute && (i & 7) == 0)
-        {
-            LayerSnapshot envelopeSettings = p;
-            float decay = env1DecayRange.convertTo0to1 (p.env1Decay);
-            for (int source = 0; source < ModMatrixData::sourceCount; ++source)
-                decay += lastModSources[(size_t) source] * matrix.fixed[(size_t) source][(size_t) ModTarget::env1Decay];
-            envelopeSettings.env1Decay = env1DecayRange.convertFrom0to1 (juce::jlimit (0.0f, 1.0f, decay));
-            applyEnvelopeSettings (envelopeSettings);
-        }
-        const float e1raw = env1.process();
-        const float e1 = p.env1Mode == Env1Mode::inverted ? -e1raw : e1raw;
-        const float e2 = env2.process();
-        if (! ampEnvUsesEnv2)
-            fixedEnv.process();
-        const float ampLevel = ampEnv.getValue();
-        std::array<float, ModMatrixData::sourceCount> modSources {
+        return std::array<float, ModMatrixData::sourceCount> {
             juce::jlimit (0.0f, 1.0f, 0.5f + 0.5f * dds2.getLastOutput()),
-            juce::jlimit (0.0f, 1.0f, 0.5f + 0.5f * l2),
-            juce::jlimit (0.0f, 1.0f, e1),
+            juce::jlimit (0.0f, 1.0f, 0.5f + 0.5f * lastLfo2),
+            juce::jlimit (0.0f, 1.0f, lastE1),
             juce::jlimit (0.0f, 1.0f, velocity),
             juce::jlimit (0.0f, 1.0f, at),
             juce::jlimit (0.0f, 1.0f, ctx.expression),
             juce::jlimit (0.0f, 1.0f, 0.5f + ctx.ribbonSemitones / 24.0f),
             juce::jlimit (0.0f, 1.0f, (float) note / 127.0f),
             isMpeMember ? juce::jlimit (0.0f, 1.0f, 0.5f + 0.5f * midiPitchBend) : 0.5f,
-            isMpeMember ? juce::jlimit (0.0f, 1.0f, midiTimbre) : 0.0f
+            isMpeMember ? juce::jlimit (0.0f, 1.0f, midiTimbre) : 0.0f,
+            juce::jlimit (0.0f, 1.0f, lastE2),
+            juce::jlimit (0.0f, 1.0f, lfo1Unipolar ? lastLfo1 : 0.5f + 0.5f * lastLfo1),
+            lastMseg[0],
+            lastMseg[1],
+            juce::jlimit (0.0f, 1.0f, ctx.modLever),
+            randomValue,
+            p.macros[0], p.macros[1], p.macros[2], p.macros[3], p.macros[4], p.macros[5], p.macros[6], p.macros[7]
         };
-        lastModSources = modSources;
+    };
 
-        const LayerSnapshot& effective = hasAnyDirectTarget ? directScratch : p;
-        if (hasAnyDirectTarget)
+    for (int i = startSample; i < startSample + numSamples; ++i)
+    {
+        // ---- modulators ----------------------------------------------------
+        const float e1raw = env1.process();
+        const float e1 = p.env1Mode == Env1Mode::inverted ? -e1raw : e1raw;
+        const float e2 = env2.process();
+        if (! ampEnvUsesEnv2)
+            fixedEnv.process();
+        const float ampLevel = ampEnv.getValue();
+
+        std::array<float, 2> mseg {};
+        for (size_t m = 0; m < 2; ++m)
         {
-            for (int target = 0; target < ModMatrixData::directTargetCount; ++target)
-            {
-                if (! hasDirectTarget[(size_t) target])
-                    continue;
-                const auto directTarget = (DirectModTarget) target;
-                const auto& range = directRanges[(size_t) target];
-                float normalized = range.convertTo0to1 (directParameterValue (p, directTarget));
-                for (int source = 0; source < ModMatrixData::sourceCount; ++source)
-                    normalized += modSources[(size_t) source] * matrix.direct[(size_t) source][(size_t) target];
-                setDirectParameterValue (directScratch, directTarget, range.convertFrom0to1 (juce::jlimit (0.0f, 1.0f, normalized)));
-            }
-            if (hasEnvelopeDirectTarget && (i & 7) == 0)
-                applyEnvelopeSettings (effective);
+            if (msegTimeModulated[m])
+                msegIncrement[m] = 1.0 / (msegSeconds (e, (int) m, ctx.bpm) * sampleRate);
+            if (msegUsed[m])
+                mseg[m] = matrix.msegs[m].evaluate ((float) msegPhase[m], msegHint[m]);
+            msegPhase[m] += msegIncrement[m];
+            if (msegPhase[m] >= 1.0)
+                msegPhase[m] = p.msegMode[m] == MsegMode::envelope ? 1.0 : msegPhase[m] - std::floor (msegPhase[m]);
         }
 
-        const double glideRate = hasDirectTarget[(size_t) DirectModTarget::portamento]
-                               ? (effective.portamento > 0.0f
-                                      ? 12.0 / ((double) portamentoSecondsPerOctave (effective.portamento) * sampleRate)
-                                      : 1.0e9)
+        lastE1 = e1;
+        lastE2 = e2;
+        lastMseg = mseg;
+        if (modulating)
+        {
+            const auto modSources = makeSources();
+            std::fill (offsets.begin(), offsets.begin() + destinationCount, 0.0f);
+            for (int k = 0; k < slotCount; ++k)
+            {
+                const auto& slot = matrix.slots[slotList[(size_t) k]];
+                offsets[(size_t) slotDestination[(size_t) k]] += slot.shape (modSources[(size_t) slot.source]) * slot.amount;
+            }
+            for (int d = 0; d < destinationCount; ++d)
+                *destinationField[(size_t) d] = destinationRange[(size_t) d]->convertFrom0to1 (
+                    juce::jlimit (0.0f, 1.0f, baseNorm[(size_t) d] + offsets[(size_t) d]));
+            if (envelopeTargets && (i & 7) == 0)
+                applyEnvelopeSettings (e);
+        }
+
+        const double glideRate = glideModulated
+                               ? (e.portamento > 0.0f ? 12.0 / ((double) portamentoSecondsPerOctave (e.portamento) * sampleRate) : 1.0e9)
                                : baseGlideRate;
-        const double lfo2Hz = hasDirectTarget[(size_t) DirectModTarget::lfo2Rate]
-                            ? rates::lowFrequencyHz (effective.lfo2Rate) * (double) lfo2RateScale
+        const double lfo2Hz = lfo2RateModulated
+                            ? rates::lowFrequencyHz (e.lfo2Rate) * std::exp2 (3.0 * e.lfo2RateMod * lfo2Push)
                             : baseLfo2Hz;
-        l2 = lfo2.process (lfo2Hz, lfo2Shape, rng) * lfo2Ramp.process (effective.lfo2Delay) * lfo2Depth;
-        const float lfo1Fader = modulatedFader (ModTarget::lfo1Rate, effective.lfo1Rate, modSources);
+        const float l2 = lfo2.process (lfo2Hz, lfo2Shape, rng) * lfo2Ramp.process (e.lfo2Delay) * lfo2Depth;
+        lastLfo2 = l2;
+        const float lfo1Fader = juce::jlimit (0.0f, 1.0f, e.lfo1Rate);
         if (lfo1Fader != lastLfo1Fader || lfo1Wave == Lfo1Wave::hfTrack)
         {
             lastLfo1Fader = lfo1Fader;
-            lastLfo1Hz = lfo1RateHz (effective, lfo1Fader, ctx);
+            lastLfo1Hz = lfo1RateHz (e, lfo1Fader, ctx);
         }
         const float lfo1Hz = lastLfo1Hz;
         const float l1Raw = lfo1.process (lfo1Hz, lfo1Shape, rng);
-        const float l1 = lfo1Hf ? l1Raw : l1Raw * lfo1Ramp.process (effective.lfo1Delay);
+        const float l1 = lfo1Hf ? l1Raw : l1Raw * lfo1Ramp.process (e.lfo1Delay);
         const float l1Mod = lfo1Hf && p.lfo1Mode != Lfo1Mode::freeOrNorm ? 0.0f : l1; // routed HF LFO is audio, not CV
+        lastLfo1 = l1Mod;
 
         // ---- pitch -----------------------------------------------------------
         if (currentPitch < targetPitch)      currentPitch = juce::jmin (targetPitch, currentPitch + glideRate);
         else if (currentPitch > targetPitch) currentPitch = juce::jmax (targetPitch, currentPitch - glideRate);
 
-        const float driftAmt = p.drift;
+        const float driftAmt = e.drift;
         const float drift1 = driftAmt > 0.0f ? driftWalk (driftValue[0], driftTarget[0], driftCounter[0]) * driftAmt * 0.15f : 0.0f;
         const float drift2 = driftAmt > 0.0f ? driftWalk (driftValue[1], driftTarget[1], driftCounter[1]) * driftAmt * 0.15f : 0.0f;
         const float driftCut = driftAmt > 0.0f ? driftWalk (driftValue[2], driftTarget[2], driftCounter[2]) * driftAmt * 0.15f : 0.0f;
 
-        const float lfo1PitchSt = effective.modLfo1 * effective.modLfo1 * 12.0f;
+        const float lfo1PitchSt = e.modLfo1 * e.modLfo1 * 12.0f;
+        const float env1PitchSt = e.modEnv1 * e.modEnv1 * 48.0f;
+        const float lfo2PitchSt = e.lfo2Dds * e.lfo2Dds * 12.0f;
+        const float perfPitch = bendTotal * e.bendDds * (midiBendSensitivity / 2.0f);
         const float oscMod = l1Mod * lfo1PitchSt + e1 * env1PitchSt;
         const float perfMod = perfPitch + l2 * lfo2PitchSt;
         const double base = currentPitch + (double) ctx.layerPitchOffset + (double) ribbon + (double) channelTuning
-                          + (double) (twinSign * p.binauralDetune * 0.01f) + (double) unisonDetune;
+                          + (double) (twinSign * e.binauralDetune * 0.01f) + (double) unisonDetune;
 
         double pitch1 = base + range1 + drift1 + (toDds1 ? oscMod : 0.0f) + (perfToDds1 ? perfMod : 0.0f);
-        double pitch2 = base + range2 + sTune.next (effective.dds2Tune, smooth) + drift2 + (toDds2 ? oscMod : 0.0f) + (perfToDds2 ? perfMod : 0.0f);
+        double pitch2 = base + range2 + sTune.next (e.dds2Tune, smooth) + drift2 + (toDds2 ? oscMod : 0.0f) + (perfToDds2 ? perfMod : 0.0f);
 
         // ---- DDS modulator ---------------------------------------------------
-        const float morphFader = sMorph.next (modulatedFader (ModTarget::waveMod, effective.pwmWave, modSources), smooth);
+        const float morphFader = sMorph.next (juce::jlimit (0.0f, 1.0f, e.pwmWave), smooth);
         float morph = morphFader, pwm = morphFader;
         if (p.pwmSource == PwmSource::lfo1)
         {
-            const float l1Uni = Lfo::isUnipolar (lfo1Shape) ? l1Mod : 0.5f * (l1Mod + 1.0f);
+            const float l1Uni = lfo1Unipolar ? l1Mod : 0.5f * (l1Mod + 1.0f);
             morph = pwm = morphFader * l1Uni;
         }
         else if (p.pwmSource == PwmSource::env1)
@@ -584,14 +581,14 @@ void Voice::render (float* outL, float* outR, int startSample, int numSamples, c
             morph = pwm = morphFader * juce::jmax (0.0f, e1);
         }
 
-        const float detune = sDetune.next (effective.pwDetune, smooth);
+        const float detune = sDetune.next (e.pwDetune, smooth);
         d1s.detune = detune;
         d1s.morph = juce::jlimit (0.0f, 1.0f, morph);
         const float pulseWidth = juce::jlimit (0.02f, 0.98f, 0.5f - 0.45f * (detune + pwm));
 
-        const float crossOct = sCross.next (modulatedFader (ModTarget::crossMod, p.crossMod, modSources), smooth) * 4.0f;
+        const float crossOct = sCross.next (juce::jlimit (0.0f, 1.0f, e.crossMod), smooth) * 4.0f;
         double f1 = noteToHz (pitch1);
-        double f2 = dds2IsLfo ? rates::dds2LfoHz (effective.dds2Tune) * (double) fastExp2 ((float) ((pitch2 - base - range2 - effective.dds2Tune) / 12.0))
+        double f2 = dds2IsLfo ? rates::dds2LfoHz (e.dds2Tune) * (double) fastExp2 ((float) ((pitch2 - base - range2 - e.dds2Tune) / 12.0))
                               : noteToHz (pitch2);
         if (crossOct > 0.0f)
         {
@@ -614,7 +611,7 @@ void Voice::render (float* outL, float* outR, int startSample, int numSamples, c
         if (lfo1Hf && p.lfo1Mode == Lfo1Mode::onceOrDds1) ch1 += l1Raw;
         if (lfo1Hf && p.lfo1Mode == Lfo1Mode::resetOrDds2) ch2 += l1Raw;
 
-        const float m = juce::jlimit (0.0f, 1.0f, sMix.next (modulatedFader (ModTarget::oscillatorMix, p.mix, modSources), smooth));
+        const float m = juce::jlimit (0.0f, 1.0f, sMix.next (juce::jlimit (0.0f, 1.0f, e.mix), smooth));
         const float osc = ch1 * (1.0f - m) + ch2 * m;
 
         // ---- VCF -------------------------------------------------------------
@@ -622,24 +619,20 @@ void Voice::render (float* outL, float* outR, int startSample, int numSamples, c
         if (p.vcfEnvSource == EnvSource::both) envSrc = e1 + e2;
         else if (p.vcfEnvSource == EnvSource::env2) envSrc = e2;
 
-        const float octaves = effective.vcfEnv * 8.0f * envSrc
-                            + effective.vcfLfo1 * 4.0f * l1Mod
-                            + effective.vcfDds2 * 4.0f * d2
-                            + p.lfo2Vcf * 4.0f * l2
-                            + p.bendVcf * 10.0f * bendTotal
+        const float dyn = juce::jlimit (0.0f, 1.0f, e.velSens);
+        const float velOct = dyn * (velocity - 1.0f) * 3.0f;
+        const float octaves = e.vcfEnv * 8.0f * envSrc
+                            + e.vcfLfo1 * 4.0f * l1Mod
+                            + e.vcfDds2 * 4.0f * d2
+                            + e.lfo2Vcf * 4.0f * l2
+                            + e.bendVcf * 10.0f * bendTotal
                             + keyTrack * ((float) currentPitch - 60.0f) / 12.0f
                             + velOct + driftCut;
 
-        const float hpfHz = hasFixedTarget[(size_t) ModTarget::hpfCutoff]
-                          ? hpfRange.convertFrom0to1 (modulatedFader (ModTarget::hpfCutoff, baseHpfNorm, modSources))
-                          : p.hpfHz;
-        const float res = hasFixedTarget[(size_t) ModTarget::lpfResonance]
-                        ? resRange.convertFrom0to1 (modulatedFader (ModTarget::lpfResonance, baseResNorm, modSources))
-                        : p.res;
-        const float lpfBase = sLpf.next (effective.lpfHz, smooth);
-        const float hpfBase = sHpf.next (hpfHz, smooth);
+        const float lpfBase = sLpf.next (e.lpfHz, smooth);
+        const float hpfBase = sHpf.next (e.hpfHz, smooth);
         filter.setParameters (hpfBase * fastExp2 (driftCut), openLadderCutoff (lpfBase * fastExp2 (octaves)),
-                              sRes.next (res, smooth), p.drive, p.vcfType);
+                              sRes.next (e.res, smooth), p.drive, p.vcfType);
         float filtered = filter.process (osc);
         if (! std::isfinite (filtered))
         {
@@ -648,12 +641,31 @@ void Voice::render (float* outL, float* outR, int startSample, int numSamples, c
             filtered = 0.0f;
         }
 
+        // ---- FILTER 2 (serial after the VCF or parallel to it) -----------------
+        if (filter2On)
+        {
+            float envSrc2 = e1;
+            if (p.f2EnvSource == EnvSource::both) envSrc2 = e1 + e2;
+            else if (p.f2EnvSource == EnvSource::env2) envSrc2 = e2;
+            const float octaves2 = e.f2Env * 8.0f * envSrc2 + e.f2Keytrack * ((float) currentPitch - 60.0f) / 12.0f + driftCut;
+            const float cutoff2 = sF2Cutoff.next (e.f2Cutoff, smooth) * fastExp2 (octaves2);
+            const float input2 = filter2Serial ? filtered : osc;
+            float y2 = filter2.process (input2, p.f2Type, cutoff2, e.f2Res, e.f2Drive);
+            if (! std::isfinite (y2))
+            {
+                filter2.reset();
+                y2 = 0.0f;
+            }
+            filtered += (y2 - filtered) * juce::jlimit (0.0f, 1.0f, e.f2Mix);
+        }
+
         // ---- VCA -------------------------------------------------------------
         // [ASSUMPTION] LFO/DDS2/LFO2 amounts act as multiplicative CV on the envelope level.
-        float gain = sVcaEnv.next (effective.vcaEnv, smooth) * ampLevel * velGain;
-        gain *= juce::jmax (0.0f, 1.0f + effective.vcaLfo1 * l1Mod);
-        gain *= juce::jmax (0.0f, 1.0f + effective.vcaDds2 * d2);
-        gain *= juce::jmax (0.0f, 1.0f + p.lfo2Vca * l2);
+        const float velGain = 1.0f - dyn + dyn * velocity;
+        float gain = sVcaEnv.next (e.vcaEnv, smooth) * ampLevel * velGain;
+        gain *= juce::jmax (0.0f, 1.0f + e.vcaLfo1 * l1Mod);
+        gain *= juce::jmax (0.0f, 1.0f + e.vcaDds2 * d2);
+        gain *= juce::jmax (0.0f, 1.0f + e.lfo2Vca * l2);
 
         const float out = filtered * gain * kOutputGain * voiceGain;
         outL[i] += out * panL;
@@ -665,5 +677,9 @@ void Voice::render (float* outL, float* outR, int startSample, int numSamples, c
             break;
         }
     }
+
+    lastModSources = makeSources();
+    for (int d = 0; d < destinationCount; ++d)
+        modOffsets[(size_t) destinations[(size_t) d]] = offsets[(size_t) d];
 }
 } // namespace nsynth

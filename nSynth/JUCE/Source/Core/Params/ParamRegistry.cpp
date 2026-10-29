@@ -192,7 +192,7 @@ std::vector<ParamSpec> buildLayerSpecs()
            "0-50 %: the tail fades in under the full dry signal; 50-100 %: the dry signal fades out."),
         F (pid::reverbSize, "Reverb Size", S::reverb, 0.0f, 1.0f, 0.6f, Lin, 0, "", 89, "-"),
         F (pid::reverbDecay, "Reverb Decay", S::reverb, 0.2f, 20.0f, 2.5f, Exp, 0, "s", 90, "-", "RT60 of the low/mid band."),
-        F (pid::reverbPreDelay, "Reverb Pre-Delay", S::reverb, 0.0f, 250.0f, 15.0f, Skw, 50.0f, "ms", -1, "-"),
+        F (pid::reverbPreDelay, "Reverb Pre-Delay", S::reverb, 0.1f, 250.0f, 15.0f, Skw, 50.0f, "ms", -1, "-"),
         F (pid::reverbDamping, "Reverb High Cut", S::reverb, 1000.0f, 20000.0f, 9000.0f, Exp, 0, "Hz", -1, "-",
            "High frequencies above this decay faster."),
         F (pid::reverbLowCut, "Reverb Low Cut", S::reverb, 20.0f, 1000.0f, 150.0f, Exp, 0, "Hz", -1, "-"),
@@ -200,6 +200,105 @@ std::vector<ParamSpec> buildLayerSpecs()
         F (pid::reverbModulation, "Reverb Modulation", S::reverb, 0.0f, 1.0f, 0.3f, Lin, 0, "", -1, "-",
            "Slow delay-line modulation that smooths metallic ringing."),
     };
+}
+
+// Parameters added in version 2. They follow every version 1 parameter, so the processing order
+// and the hosts' parameter indices of the original set stay unchanged.
+std::vector<ParamSpec> buildLayerSpecsV2()
+{
+    using S = Section;
+    const juce::StringArray msegDivisions { "1/16", "1/8", "1/4", "1/2", "1 Bar", "2 Bars", "4 Bars", "8 Bars" };
+    const juce::StringArray msegModes { "Env", "Loop", "Free" };
+    std::vector<ParamSpec> specs {
+        // ---------------------------------------------------------------- Macros
+        F (pid::macro1, "Macro 1", S::macros, 0.0f, 1.0f, 0.0f, Lin, 0, "", -1, "-", "Modulation source; assign it in the MOD page."),
+        F (pid::macro2, "Macro 2", S::macros, 0.0f, 1.0f, 0.0f, Lin, 0, "", -1, "-", "Modulation source; assign it in the MOD page."),
+        F (pid::macro3, "Macro 3", S::macros, 0.0f, 1.0f, 0.0f, Lin, 0, "", -1, "-", "Modulation source; assign it in the MOD page."),
+        F (pid::macro4, "Macro 4", S::macros, 0.0f, 1.0f, 0.0f, Lin, 0, "", -1, "-", "Modulation source; assign it in the MOD page."),
+        F (pid::macro5, "Macro 5", S::macros, 0.0f, 1.0f, 0.0f, Lin, 0, "", -1, "-", "Modulation source; assign it in the MOD page."),
+        F (pid::macro6, "Macro 6", S::macros, 0.0f, 1.0f, 0.0f, Lin, 0, "", -1, "-", "Modulation source; assign it in the MOD page."),
+        F (pid::macro7, "Macro 7", S::macros, 0.0f, 1.0f, 0.0f, Lin, 0, "", -1, "-", "Modulation source; assign it in the MOD page."),
+        F (pid::macro8, "Macro 8", S::macros, 0.0f, 1.0f, 0.0f, Lin, 0, "", -1, "-", "Modulation source; assign it in the MOD page."),
+
+        // ---------------------------------------------------------------- MSEG 1 / 2
+        C (pid::mseg1Mode, "MSEG1 Mode", S::mseg1, msegModes, 0, -1, "-",
+           "Env: plays once from note-on and holds the end; Loop: restarts at note-on and repeats; Free: repeats on the layer clock."),
+        B (pid::mseg1Sync, "MSEG1 Sync", S::mseg1, false, -1, "-", "On: the cycle length follows the tempo."),
+        F (pid::mseg1Time, "MSEG1 Time", S::mseg1, 0.01f, 30.0f, 1.0f, Exp, 0, "s", -1, "-", "Length of one pass through the shape."),
+        C (pid::mseg1Division, "MSEG1 Length", S::mseg1, msegDivisions, 4, -1, "-"),
+        C (pid::mseg2Mode, "MSEG2 Mode", S::mseg2, msegModes, 1, -1, "-",
+           "Env: plays once from note-on and holds the end; Loop: restarts at note-on and repeats; Free: repeats on the layer clock."),
+        B (pid::mseg2Sync, "MSEG2 Sync", S::mseg2, true, -1, "-", "On: the cycle length follows the tempo."),
+        F (pid::mseg2Time, "MSEG2 Time", S::mseg2, 0.01f, 30.0f, 1.0f, Exp, 0, "s", -1, "-", "Length of one pass through the shape."),
+        C (pid::mseg2Division, "MSEG2 Length", S::mseg2, msegDivisions, 4, -1, "-"),
+
+        // ---------------------------------------------------------------- Filter 2
+        C (pid::filter2Routing, "Filter 2 Routing", S::filter2, { "Off", "Serial", "Parallel" }, 0, -1, "-",
+           "Serial: FILTER 2 after the VCF; Parallel: both filters get the oscillators, MIX blends them."),
+        C (pid::filter2Type, "Filter 2 Type", S::filter2,
+           { "LP 12", "LP 24", "HP 12", "HP 24", "Band Pass", "Notch", "Comb +", "Comb -", "Formant" }, 0, -1, "-",
+           "Comb: CUTOFF tunes the comb, RESONANCE is its feedback; Formant: CUTOFF morphs the vowel A-E-I-O-U."),
+        F (pid::filter2Cutoff, "Filter 2 Cutoff", S::filter2, 20.0f, 20000.0f, 2000.0f, Exp, 0, "Hz", -1, "-"),
+        F (pid::filter2Res, "Filter 2 Resonance", S::filter2, 0.0f, 1.0f, 0.2f, Lin, 0, "", -1, "-"),
+        F (pid::filter2Env, "Filter 2 Env Amount", S::filter2, -1.0f, 1.0f, 0.0f, Lin, 0, "", -1, "-", "Max +/-8 octaves."),
+        C (pid::filter2EnvSource, "Filter 2 Env Source", S::filter2, { "ENV 1", "1 + 2", "ENV 2" }, 2, -1, "-"),
+        F (pid::filter2Keytrack, "Filter 2 Keytrack", S::filter2, 0.0f, 1.0f, 0.0f, Lin, 0, "", -1, "-"),
+        F (pid::filter2Drive, "Filter 2 Drive", S::filter2, 0.0f, 1.0f, 0.0f, Lin, 0, "", -1, "-"),
+        F (pid::filter2Mix, "Filter 2 Mix", S::filter2, 0.0f, 1.0f, 1.0f, Lin, 0, "", -1, "-",
+           "Serial: dry/wet of FILTER 2; Parallel: 0 = VCF only, 1 = FILTER 2 only."),
+
+        // ---------------------------------------------------------------- Delay / reverb additions
+        B (pid::delayOn, "Delay On", S::delay, true, -1, "-"),
+        F (pid::delayDuck, "Delay Duck", S::delay, 0.0f, 1.0f, 0.0f, Lin, 0, "", -1, "-", "Lowers the echoes while the dry signal plays."),
+        B (pid::reverbOn, "Reverb On", S::reverb, true, -1, "-"),
+        F (pid::reverbDuck, "Reverb Duck", S::reverb, 0.0f, 1.0f, 0.0f, Lin, 0, "", -1, "-", "Lowers the tail while the dry signal plays."),
+
+        // ---------------------------------------------------------------- Distortion
+        B (pid::distOn, "Distortion On", S::fxDistortion, false, -1, "-"),
+        C (pid::distType, "Distortion Type", S::fxDistortion, { "Soft", "Hard", "Tube", "Fold", "Crush" }, 0, -1, "-",
+           "Soft/Hard: anti-aliased clipping; Tube: asymmetric; Fold: wave folder; Crush: bit and rate reduction."),
+        F (pid::distDrive, "Distortion Drive", S::fxDistortion, 0.0f, 1.0f, 0.3f, Lin, 0, "", -1, "-", "Up to +36 dB into the shaper."),
+        F (pid::distTone, "Distortion Tone", S::fxDistortion, 0.0f, 1.0f, 0.7f, Lin, 0, "", -1, "-", "Low-pass after the shaper."),
+        F (pid::distMix, "Distortion Mix", S::fxDistortion, 0.0f, 1.0f, 1.0f, Lin, 0, "", -1, "-"),
+
+        // ---------------------------------------------------------------- EQ
+        B (pid::eqOn, "EQ On", S::fxEq, false, -1, "-"),
+        F (pid::eqLowFreq, "EQ Low Freq", S::fxEq, 30.0f, 1000.0f, 150.0f, Exp, 0, "Hz", -1, "-", "Low shelf."),
+        F (pid::eqLowGain, "EQ Low Gain", S::fxEq, -15.0f, 15.0f, 0.0f, Lin, 0, "dB", -1, "-"),
+        F (pid::eqMidFreq, "EQ Mid Freq", S::fxEq, 100.0f, 10000.0f, 1000.0f, Exp, 0, "Hz", -1, "-", "Peak."),
+        F (pid::eqMidGain, "EQ Mid Gain", S::fxEq, -15.0f, 15.0f, 0.0f, Lin, 0, "dB", -1, "-"),
+        F (pid::eqMidQ, "EQ Mid Q", S::fxEq, 0.3f, 6.0f, 0.7f, Exp, 0, "Q", -1, "-"),
+        F (pid::eqHighFreq, "EQ High Freq", S::fxEq, 1000.0f, 18000.0f, 6000.0f, Exp, 0, "Hz", -1, "-", "High shelf."),
+        F (pid::eqHighGain, "EQ High Gain", S::fxEq, -15.0f, 15.0f, 0.0f, Lin, 0, "dB", -1, "-"),
+
+        // ---------------------------------------------------------------- Compressor
+        B (pid::compOn, "Compressor On", S::fxCompressor, false, -1, "-"),
+        F (pid::compThreshold, "Comp Threshold", S::fxCompressor, -48.0f, 0.0f, -18.0f, Lin, 0, "dB", -1, "-"),
+        F (pid::compRatio, "Comp Ratio", S::fxCompressor, 1.0f, 20.0f, 4.0f, Skw, 4.0f, ":1", -1, "-"),
+        F (pid::compAttack, "Comp Attack", S::fxCompressor, 0.1f, 100.0f, 5.0f, Exp, 0, "ms", -1, "-"),
+        F (pid::compRelease, "Comp Release", S::fxCompressor, 10.0f, 1000.0f, 120.0f, Exp, 0, "ms", -1, "-"),
+        F (pid::compMakeup, "Comp Makeup", S::fxCompressor, 0.0f, 24.0f, 0.0f, Lin, 0, "dB", -1, "-"),
+        C (pid::compKey, "Comp Key", S::fxCompressor, { "Self", "Other Layer" }, 0, -1, "-",
+           "Other Layer: the other layer's dry signal ducks this one (sidechain pumping in Dual/Split)."),
+        F (pid::compMix, "Comp Mix", S::fxCompressor, 0.0f, 1.0f, 1.0f, Lin, 0, "", -1, "-", "Parallel compression."),
+
+        // ---------------------------------------------------------------- Phaser
+        B (pid::phaserOn, "Phaser On", S::fxPhaser, false, -1, "-"),
+        F (pid::phaserRate, "Phaser Rate", S::fxPhaser, 0.02f, 10.0f, 0.4f, Exp, 0, "Hz", -1, "-"),
+        F (pid::phaserDepth, "Phaser Depth", S::fxPhaser, 0.0f, 1.0f, 0.6f, Lin, 0, "", -1, "-"),
+        F (pid::phaserFeedback, "Phaser Feedback", S::fxPhaser, -0.95f, 0.95f, 0.4f, Lin, 0, "", -1, "-"),
+        F (pid::phaserMix, "Phaser Mix", S::fxPhaser, 0.0f, 1.0f, 0.5f, Lin, 0, "", -1, "-"),
+
+        // ---------------------------------------------------------------- Flanger
+        B (pid::flangerOn, "Flanger On", S::fxFlanger, false, -1, "-"),
+        F (pid::flangerRate, "Flanger Rate", S::fxFlanger, 0.02f, 10.0f, 0.25f, Exp, 0, "Hz", -1, "-"),
+        F (pid::flangerDepth, "Flanger Depth", S::fxFlanger, 0.0f, 1.0f, 0.6f, Lin, 0, "", -1, "-"),
+        F (pid::flangerFeedback, "Flanger Feedback", S::fxFlanger, -0.95f, 0.95f, 0.5f, Lin, 0, "", -1, "-"),
+        F (pid::flangerMix, "Flanger Mix", S::fxFlanger, 0.0f, 1.0f, 0.5f, Lin, 0, "", -1, "-"),
+    };
+    for (auto& spec : specs)
+        spec.version = 2;
+    return specs;
 }
 
 std::vector<ParamSpec> buildPerformanceSpecs()
@@ -227,7 +326,13 @@ std::vector<ParamSpec> buildPerformanceSpecs()
 
 const std::vector<ParamSpec>& getLayerParamSpecs()
 {
-    static const auto specs = buildLayerSpecs();
+    static const auto specs = []
+    {
+        auto all = buildLayerSpecs();
+        for (auto& spec : buildLayerSpecsV2())
+            all.push_back (std::move (spec));
+        return all;
+    }();
     return specs;
 }
 
@@ -243,6 +348,15 @@ const ParamSpec* findLayerSpec (const juce::String& suffix)
         if (suffix == s.suffix)
             return &s;
     return nullptr;
+}
+
+int findLayerSpecIndex (const juce::String& suffix)
+{
+    const auto& specs = getLayerParamSpecs();
+    for (size_t i = 0; i < specs.size(); ++i)
+        if (suffix == specs[i].suffix)
+            return (int) i;
+    return -1;
 }
 
 juce::String layerPrefix (Layer layer) { return layer == Layer::upper ? "up_" : "lo_"; }
@@ -268,6 +382,15 @@ juce::String sectionName (Section s)
         case Section::delay:       return "Delay";
         case Section::reverb:      return "Reverb";
         case Section::performance: return "Performance";
+        case Section::macros:      return "Macros";
+        case Section::mseg1:       return "MSEG 1";
+        case Section::mseg2:       return "MSEG 2";
+        case Section::filter2:     return "Filter 2";
+        case Section::fxDistortion: return "Distortion";
+        case Section::fxEq:        return "EQ";
+        case Section::fxCompressor: return "Compressor";
+        case Section::fxPhaser:    return "Phaser";
+        case Section::fxFlanger:   return "Flanger";
     }
     return {};
 }
@@ -301,6 +424,18 @@ juce::NormalisableRange<float> makeRange (const ParamSpec& spec)
     return r;
 }
 
+const juce::NormalisableRange<float>& getLayerParamRange (int index)
+{
+    static const auto ranges = []
+    {
+        std::vector<juce::NormalisableRange<float>> all;
+        for (const auto& spec : getLayerParamSpecs())
+            all.push_back (makeRange (spec));
+        return all;
+    }();
+    return ranges[(size_t) juce::jlimit (0, (int) ranges.size() - 1, index)];
+}
+
 juce::String formatValue (const ParamSpec& spec, float v)
 {
     const juce::String unit (spec.unit);
@@ -308,18 +443,21 @@ juce::String formatValue (const ParamSpec& spec, float v)
     if (unit == "s")   return v < 1.0f ? juce::String (v * 1000.0f, v < 0.01f ? 1 : 0) + " ms" : juce::String (v, 2) + " s";
     if (unit == "ms")  return v < 1000.0f ? juce::String (v, v < 10.0f ? 1 : 0) + " ms" : juce::String (v / 1000.0f, 2) + " s";
     if (unit == "st")  return (v > 0.0f ? "+" : "") + juce::String (v, 2) + " st";
-    if (unit == "dB")  return v <= -59.9f ? juce::String ("-inf dB") : juce::String (v, 1) + " dB";
+    if (unit == "dB")  return v <= -59.9f ? juce::String ("-inf dB")
+                                          : (spec.minValue < 0.0f && spec.maxValue > 0.0f && v > 0.05f ? "+" : "") + juce::String (v, 1) + " dB";
     if (unit == "ct")  return (v > 0.0f ? "+" : "") + juce::String (juce::roundToInt (v)) + " ct";
     if (unit == "BPM") return juce::String (v, 1) + " BPM";
+    if (unit == ":1")  return juce::String (v, v < 10.0f ? 1 : 0) + " : 1";
+    if (unit == "Q")   return "Q " + juce::String (v, 2);
     if (spec.minValue < 0.0f) return (v > 0.0f ? "+" : "") + juce::String (juce::roundToInt (v * 100.0f)) + " %";
     return juce::String (juce::roundToInt (v * 100.0f)) + " %";
 }
 
 float parseValue (const ParamSpec& spec, const juce::String& text)
 {
-    const auto t = text.trim().toLowerCase();
-    float v = t.retainCharacters ("+-.0123456789").getFloatValue();
     const juce::String unit (spec.unit);
+    const auto t = (unit == ":1" ? text.upToFirstOccurrenceOf (":", false, false) : text).trim().toLowerCase();
+    float v = t.retainCharacters ("+-.0123456789").getFloatValue();
     if (unit == "Hz" && t.contains ("k")) v *= 1000.0f;
     else if (unit == "s" && t.endsWith ("ms")) v *= 0.001f;
     else if (unit == "ms" && t.endsWith ("s") && ! t.endsWith ("ms")) v *= 1000.0f;
@@ -331,7 +469,7 @@ namespace
 {
 std::unique_ptr<juce::RangedAudioParameter> makeParameter (const juce::String& id, const juce::String& name, const ParamSpec& spec)
 {
-    const juce::ParameterID pid { id, 1 };
+    const juce::ParameterID pid { id, spec.version };
 
     switch (spec.kind)
     {

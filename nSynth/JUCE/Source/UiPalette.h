@@ -15,4 +15,5 @@ inline const juce::Colour kLowerAccent { 0xfff58a3f };
 inline const juce::Colour kPerfAccent { 0xff9ad46a };
 inline const juce::Colour kFavourite { 0xfff5c542 };
 inline const juce::Colour kNegative { 0xffef6b73 };
+inline const juce::Colour kModAccent { 0xffc28cff };   // modulation rings, amounts and source chips
 } // namespace nSynth::ui

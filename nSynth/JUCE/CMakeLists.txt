@@ -48,6 +48,8 @@ set(NSYNTH_CORE_SOURCES
   Source/Core/DSP/Lfo.cpp
   Source/Core/DSP/VoiceFilter.h
   Source/Core/DSP/VoiceFilter.cpp
+  Source/Core/DSP/Filter2.h
+  Source/Core/DSP/Filter2.cpp
   Source/Core/DSP/Effects.h
   Source/Core/DSP/Effects.cpp
   Source/Core/Engine/LayerSnapshot.h
@@ -113,6 +115,11 @@ target_sources(nSynth PRIVATE
   Source/PluginProcessor.cpp
   Source/PluginEditor.h
   Source/PluginEditor.cpp
+  Source/EditorComponents.h
+  Source/ModulationUi.h
+  Source/ModulationUi.cpp
+  Source/FxPage.h
+  Source/FxPage.cpp
   Source/PresetBrowser.h
   Source/PresetBrowser.cpp
   Source/UiPalette.h
@@ -138,6 +145,11 @@ function(nsynth_add_engine_tool target source_file)
     Source/PluginProcessor.cpp
     Source/PluginEditor.h
     Source/PluginEditor.cpp
+    Source/EditorComponents.h
+    Source/ModulationUi.h
+    Source/ModulationUi.cpp
+    Source/FxPage.h
+    Source/FxPage.cpp
     Source/PresetBrowser.h
     Source/PresetBrowser.cpp
     Source/UiPalette.h
@@ -169,6 +181,11 @@ if(NSYNTH_BUILD_TESTS)
     Source/PluginProcessor.cpp
     Source/PluginEditor.h
     Source/PluginEditor.cpp
+    Source/EditorComponents.h
+    Source/ModulationUi.h
+    Source/ModulationUi.cpp
+    Source/FxPage.h
+    Source/FxPage.cpp
     Source/PresetBrowser.h
     Source/PresetBrowser.cpp
     Source/UiPalette.h
@@ -186,6 +203,7 @@ if(NSYNTH_BUILD_TESTS)
     Source/Tests/MidiInputTests.cpp
     Source/Tests/PluginTests.cpp
     Source/Tests/FactoryPresetTests.cpp
+    Source/Tests/ModulationFxTests.cpp
   )
 
   target_include_directories(nSynthTests PRIVATE Source)

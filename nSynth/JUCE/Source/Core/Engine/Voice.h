@@ -7,6 +7,7 @@
 #include "../DSP/Envelope.h"
 #include "../DSP/Lfo.h"
 #include "../DSP/VoiceFilter.h"
+#include "../DSP/Filter2.h"
 
 namespace nsynth
 {
@@ -57,6 +58,7 @@ public:
         float twinSign { 0.0f };      // binaural x2: -1 / +1 x BINAURAL DETUNE
         float detuneSemitones { 0.0f }; // unison spread of this stacked voice
         float gain { 1.0f };
+        std::array<double, 2> msegPhase {}; // layer clock phases for MSEG FREE mode
     };
 
     // One full-level voice peaks around -5 dBFS; stacked chords are caught by the output limiter.
@@ -98,6 +100,10 @@ public:
         isMpeMember = mpeMember;
     }
     const std::array<float, ModMatrixData::sourceCount>& getLastModSources() const noexcept { return lastModSources; }
+    // Normalised offset the matrix added to each modulated per-voice parameter in the last block
+    // (only the entries of ModMatrixData::modulated are current). For the editor's modulation rings.
+    const std::array<float, kLayerParamCount>& getModOffsets() const noexcept { return modOffsets; }
+    float getMsegPhase (int index) const noexcept { return (float) msegPhase[(size_t) juce::jlimit (0, 1, index)]; }
 
     // Exposed for tests / UI metering.
     const Envelope& getEnv1() const noexcept { return env1; }
@@ -115,6 +121,7 @@ public:
 private:
     void applyEnvelopeSettings (const LayerSnapshot& p) noexcept;
     void triggerEnvelopes() noexcept;
+    void restartMsegs (const LayerSnapshot& p, const std::array<double, 2>& freePhase) noexcept;
     float lfo1RateHz (const LayerSnapshot& p, float rateFader, const VoiceContext& ctx) const noexcept;
     float driftWalk (float& value, float& target, int& counter) noexcept;
     float openLadderCutoff (float hz) noexcept;
@@ -126,6 +133,7 @@ private:
     Dds1 dds1;
     Dds2 dds2;
     VoiceFilter filter;
+    Filter2 filter2;
     Envelope env1, env2, fixedEnv;
     Lfo lfo1, lfo2;
     DelayRamp lfo1Ramp, lfo2Ramp;
@@ -152,7 +160,13 @@ private:
     float driftValue[3] {}, driftTarget[3] {};
     int driftCounter[3] {};
 
-    SmoothedValue sLpf, sHpf, sRes, sMix, sVcaEnv, sMorph, sDetune, sCross, sTune;
+    SmoothedValue sLpf, sHpf, sRes, sMix, sVcaEnv, sMorph, sDetune, sCross, sTune, sF2Cutoff;
     std::array<float, ModMatrixData::sourceCount> lastModSources {};
+    std::array<float, kLayerParamCount> modOffsets {};
+    std::array<double, 2> msegPhase {};
+    std::array<int, 2> msegHint {};
+    float randomValue { 0.5f };   // per-note RANDOM source
+    float lastLfo1 { 0.0f }, lastLfo2 { 0.0f };
+    bool lfo1Unipolar { false };
 };
 } // namespace nsynth

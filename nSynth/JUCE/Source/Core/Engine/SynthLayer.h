@@ -10,8 +10,8 @@
 namespace nsynth
 {
 // One layer (UPPER or LOWER): note handling / voice assignment over the hardware
-// voices it currently owns, 2x oversampled rendering, pan, air shelf and the
-// chorus -> delay -> reverb chain.
+// voices it currently owns, 2x oversampled rendering, pan, air shelf and the effect
+// chain (eight modules in the patch's order).
 class SynthLayer
 {
 public:
@@ -46,6 +46,18 @@ public:
 
     // Downsample, pan, FX -> dest (stereo, host rate).
     void finishBlock (juce::AudioBuffer<float>& dest, int numHostSamples);
+    // finishBlock() in two steps, so each layer's compressor can key on the other layer:
+    // finishVoices() leaves the dry layer signal in getKeyBuffer(), applyEffects() runs the chain.
+    void finishVoices (int numHostSamples);
+    void applyEffects (juce::AudioBuffer<float>& dest, int numHostSamples, const juce::AudioBuffer<float>* otherLayerKey);
+    const juce::AudioBuffer<float>& getKeyBuffer() const noexcept { return keyBuffer; }
+
+    // Editor feedback (any thread): the normalised modulation offset of a parameter as last
+    // applied (newest voice / layer effects), the MSEG play position of the newest voice
+    // (-1 while silent) and the compressor's gain reduction.
+    float getModulationOffset (int parameterIndex) const noexcept;
+    float getMsegPosition (int index) const noexcept { return uiMsegPhase[(size_t) juce::jlimit (0, 1, index)].load (std::memory_order_relaxed); }
+    float getCompressorReductionDb() const noexcept { return uiCompReduction.load (std::memory_order_relaxed); }
 
     int getActiveVoiceCount() const noexcept;
     Layer getId() const noexcept { return id; }
@@ -89,6 +101,10 @@ private:
     void monoNoteOn (int note, float velocity, int midiChannel);
     void monoNoteOff (int note, int midiChannel);
     void releaseHeldBySustainEnd();
+    bool fxModuleEnabled (FxModule module, const LayerSnapshot& fx) const noexcept;
+    void processFxModule (FxModule module, juce::AudioBuffer<float>& buffer, int numHostSamples, const LayerSnapshot& fx,
+                          double delaySeconds, const juce::AudioBuffer<float>* key) noexcept;
+    void resetFxModule (FxModule module) noexcept;
 
     Layer id;
     ModMatrix modMatrix;
@@ -118,11 +134,25 @@ private:
     juce::AudioBuffer<float> parallelScratch;
     juce::dsp::AudioBlock<float> osBlock;
     double lfo2MasterPhase { 0.0 };
+    std::array<double, 2> msegMasterPhase {};
 
     AirShelf air;
     StereoChorus chorus;
     StereoDelay delay;
     StereoReverb reverb;
+    Distortion distortion;
+    ThreeBandEq eq;
+    Compressor compressor;
+    Phaser phaser;
+    Flanger flanger;
+    juce::AudioBuffer<float> keyBuffer, fxDry;
+    std::array<float, ModMatrixData::kFxModules> fxFade {};   // on/off crossfade, -1 = not started
+    std::array<bool, ModMatrixData::kFxModules> fxIdle {};
+    std::array<float, ModMatrixData::sourceCount> layerSources {};   // modulation sources of the effects
     juce::Random rng;
+
+    std::array<std::atomic<float>, kLayerParamCount> uiModOffset {};
+    std::array<std::atomic<float>, 2> uiMsegPhase {};
+    std::atomic<float> uiCompReduction { 0.0f };
 };
 } // namespace nsynth

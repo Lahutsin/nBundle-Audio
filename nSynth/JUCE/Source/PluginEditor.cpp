@@ -27,7 +27,11 @@ juce::String shortCaption (const juce::String& name)
     if (name == "Static Velocity") return "Static Vel";
     if (name == "Velocity Curve") return "Vel Curve";
     if (name == "Velocity Sensitivity") return "Vel Sens";
-    for (auto prefix : { "Chorus ", "Delay ", "Reverb " })
+    if (name == "Comp Key") return "Key";
+    if (name == "Delay Ping-Pong") return "Ping-Pong";
+    if (name == "Reverb High Cut") return "High Cut";
+    for (auto prefix : { "Chorus ", "Delay ", "Reverb ", "Filter 2 ", "Distortion ", "Comp ", "Phaser ", "Flanger ",
+                         "EQ ", "MSEG1 ", "MSEG2 " })
         if (name.startsWith (prefix))
             return name.substring ((int) std::strlen (prefix));
     return name;
@@ -54,6 +58,8 @@ juce::String shortChoiceText (const juce::String& choice)
     if (choice == "DDS 2") return "DDS2";
     if (choice == "AT + Trig") return "AT+Tr";
     if (choice == "On (AT->Bend)") return "On";
+    if (choice == "Serial") return "Ser";
+    if (choice == "Parallel") return "Par";
     return choice;
 }
 
@@ -95,17 +101,6 @@ void paintPageTitle (juce::Graphics& g, juce::Rectangle<int> header, const juce:
     g.fillRoundedRectangle (chip, 4.0f);
     g.setColour (accent);
     g.drawText (tag, chip, juce::Justification::centred);
-}
-
-void paintClearButton (juce::Graphics& g, juce::Rectangle<int> r, bool hot)
-{
-    const auto c = r.toFloat();
-    g.setColour (hot ? kNegative : kOutline);
-    g.fillEllipse (c);
-    const auto x = c.reduced (c.getWidth() * 0.32f);
-    g.setColour (kText);
-    g.drawLine ({ x.getTopLeft(), x.getBottomRight() }, 1.5f);
-    g.drawLine ({ x.getBottomLeft(), x.getTopRight() }, 1.5f);
 }
 
 // One waveform cycle scaled into the area, over a zero line.
@@ -183,12 +178,33 @@ void NSynthLookAndFeel::drawButtonText (juce::Graphics& g, juce::TextButton& but
 void NSynthLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int w, int h, float pos, float start, float end, juce::Slider& s)
 {
     const auto bounds = juce::Rectangle<int> (x, y, w, h).toFloat().reduced (1.5f);
-    const float radius = juce::jmin (bounds.getWidth(), bounds.getHeight()) * 0.5f;
+    // Room for the modulation ring outside the value arc.
+    const float outer = juce::jmin (bounds.getWidth(), bounds.getHeight()) * 0.5f;
+    const float ringW = juce::jmax (1.5f, outer * 0.07f);
+    const float radius = outer - ringW - 1.5f;
     const auto centre = bounds.getCentre();
     const float lineW = juce::jmax (1.8f, radius * 0.17f);
     const float arcR = radius - lineW * 0.5f;
     const float angle = start + pos * (end - start);
     const auto accent = accentFor (s);
+
+    const auto& props = s.getProperties();
+    if ((bool) props.getWithDefault ("modOn", false))
+    {
+        // Modulation ring: the range the slots can reach, and a dot at the live value.
+        const float ringR = outer - ringW * 0.5f;
+        auto angleAt = [&] (float p) { return start + juce::jlimit (0.0f, 1.0f, p) * (end - start); };
+        const float low = pos + (float) props.getWithDefault ("modLow", 0.0f);
+        const float high = pos + (float) props.getWithDefault ("modHigh", 0.0f);
+        juce::Path ring;
+        ring.addCentredArc (centre.x, centre.y, ringR, ringR, 0.0f, angleAt (low), angleAt (high), true);
+        g.setColour (kModAccent.withAlpha (0.85f));
+        g.strokePath (ring, juce::PathStrokeType (ringW, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        const float liveAngle = angleAt (pos + (float) props.getWithDefault ("modLive", 0.0f));
+        const juce::Point<float> dot (centre.x + ringR * std::sin (liveAngle), centre.y - ringR * std::cos (liveAngle));
+        g.setColour (kText);
+        g.fillEllipse (juce::Rectangle<float> (ringW * 2.4f, ringW * 2.4f).withCentre (dot));
+    }
 
     juce::Path track;
     track.addCentredArc (centre.x, centre.y, arcR, arcR, 0.0f, start, end, true);
@@ -340,6 +356,11 @@ void ParamControl::mouseDown (const juce::MouseEvent& event)
     menu.addItem (1, "Learn MIDI CC");
     const int assigned = getAssignedMidiCC != nullptr ? getAssignedMidiCC() : -1;
     menu.addItem (2, assigned >= 0 ? "Clear MIDI CC " + juce::String (assigned) : "Clear MIDI CC", assigned >= 0);
+    if (modulationHost != nullptr && parameterIndex >= 0 && modulationHost->canModulate (layer, parameterIndex))
+    {
+        menu.addSeparator();
+        modulationHost->addModulationMenuItems (menu, layer, parameterIndex);
+    }
     juce::Component::SafePointer<ParamControl> safeThis (this);
     menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (this), [safeThis] (int result)
     {
@@ -352,13 +373,86 @@ void ParamControl::mouseDown (const juce::MouseEvent& event)
         }
         else if (result == 2 && safeThis->clearMidiCC != nullptr)
             safeThis->clearMidiCC();
+        else if (result >= ModulationHost::kModulationMenuBase && safeThis->modulationHost != nullptr)
+            safeThis->modulationHost->handleModulationMenu (result, safeThis->layer, safeThis->parameterIndex);
     });
+}
+
+void ParamControl::setModulationTarget (ModulationHost* host, Layer targetLayer, int index)
+{
+    modulationHost = host;
+    layer = targetLayer;
+    parameterIndex = index;
+}
+
+void ParamControl::setModulationDisplay (bool modulated, float rangeLow, float rangeHigh, float live)
+{
+    if (slider == nullptr || slider->getSliderStyle() != juce::Slider::RotaryHorizontalVerticalDrag)
+        return;
+    auto& props = slider->getProperties();
+    const bool was = props.getWithDefault ("modOn", false);
+    if (! modulated && ! was)
+        return;
+    const float oldLow = props.getWithDefault ("modLow", 0.0f), oldHigh = props.getWithDefault ("modHigh", 0.0f),
+                oldLive = props.getWithDefault ("modLive", 0.0f);
+    if (was == modulated && std::abs (oldLow - rangeLow) < 1.0e-4f && std::abs (oldHigh - rangeHigh) < 1.0e-4f
+        && std::abs (oldLive - live) < 2.0e-3f)
+        return;
+    props.set ("modOn", modulated);
+    props.set ("modLow", rangeLow);
+    props.set ("modHigh", rangeHigh);
+    props.set ("modLive", live);
+    slider->repaint();
+}
+
+void ParamControl::setCaptionVisible (bool shouldShow)
+{
+    captionVisible = shouldShow;
+    caption.setVisible (shouldShow);
+    resized();
+}
+
+void ParamControl::setEditableCaption (std::function<juce::String()> getText, std::function<void (const juce::String&)> setText)
+{
+    getCaptionText = std::move (getText);
+    caption.setEditable (false, true, false);
+    caption.setTooltip ("Double-click to rename");
+    caption.onTextChange = [this, setText = std::move (setText)]
+    {
+        setText (caption.getText());
+        captionText = getCaptionText();
+    };
+    captionText = getCaptionText();
+    caption.setText (captionText, juce::dontSendNotification);
+}
+
+bool ParamControl::isInterestedInDragSource (const SourceDetails& details)
+{
+    return modulationHost != nullptr && parameterIndex >= 0
+        && ModulationHost::sourceFromDrag (details.description) != ModSource::count
+        && modulationHost->canModulate (layer, parameterIndex);
+}
+
+void ParamControl::itemDropped (const SourceDetails& details)
+{
+    dragHover = false;
+    repaint();
+    modulationHost->dropModulationSource (ModulationHost::sourceFromDrag (details.description), layer, parameterIndex);
+}
+
+void ParamControl::paintOverChildren (juce::Graphics& g)
+{
+    if (! dragHover)
+        return;
+    g.setColour (kModAccent);
+    g.drawRoundedRectangle (getLocalBounds().toFloat().reduced (1.0f), 5.0f, 2.0f);
 }
 
 void ParamControl::resized()
 {
     auto r = getLocalBounds();
-    caption.setBounds (r.removeFromTop (13));
+    if (captionVisible)
+        caption.setBounds (r.removeFromTop (13));
     if (slider != nullptr)
         slider->setBounds (r);
     else if (! choiceButtons.empty())
@@ -384,8 +478,75 @@ void ParamControl::timerCallback()
             choiceButtons[(size_t) i]->setToggleState (i == selected, juce::dontSendNotification);
     }
     const int assigned = getAssignedMidiCC != nullptr ? getAssignedMidiCC() : -1;
-    caption.setText (captionText + (assigned >= 0 ? " [CC " + juce::String (assigned) + "]" : ""),
-                     juce::dontSendNotification);
+    if (getCaptionText != nullptr && ! caption.isBeingEdited())
+        captionText = getCaptionText();
+    if (! caption.isBeingEdited())
+        caption.setText (captionText + (assigned >= 0 ? " [CC " + juce::String (assigned) + "]" : ""),
+                         juce::dontSendNotification);
+}
+
+//==============================================================================
+ModSource ModulationHost::sourceFromDrag (const juce::var& description)
+{
+    const auto text = description.toString();
+    if (! text.startsWith ("modsrc:"))
+        return ModSource::count;
+    const int index = text.fromFirstOccurrenceOf (":", false, false).getIntValue();
+    return index >= 0 && index < (int) ModSource::count ? (ModSource) index : ModSource::count;
+}
+
+ModSourceChip::ModSourceChip (ModSource s, juce::Colour a)
+    : source (s), accent (a), label (ModMatrix::getSourceShortName (s))
+{
+    setMouseCursor (juce::MouseCursor::DraggingHandCursor);
+    setTooltip (juce::String (ModMatrix::getSourceName (s)) + ": drag onto a knob to modulate it");
+}
+
+int ModSourceChip::getPreferredWidth() const
+{
+    return juce::GlyphArrangement::getStringWidthInt (juce::Font (juce::FontOptions (10.5f)).boldened(), label) + 22;
+}
+
+void ModSourceChip::paint (juce::Graphics& g)
+{
+    const auto r = getLocalBounds().toFloat().reduced (0.5f);
+    const bool hot = isMouseOver() || dragging;
+    g.setColour (inUse ? kModAccent.withAlpha (hot ? 0.35f : 0.22f) : kBackground.withAlpha (hot ? 1.0f : 0.7f));
+    g.fillRoundedRectangle (r, r.getHeight() * 0.5f);
+    g.setColour (inUse ? kModAccent : hot ? kTextDim : kOutline);
+    g.drawRoundedRectangle (r, r.getHeight() * 0.5f, 1.0f);
+    // Grip dots: this is something to drag.
+    g.setColour (inUse ? kModAccent : kTextDim);
+    for (int i = 0; i < 3; ++i)
+        g.fillEllipse (r.getX() + 7.0f, r.getCentreY() - 4.5f + 3.5f * (float) i, 2.2f, 2.2f);
+    g.setColour (inUse || hot ? kText : kTextDim);
+    g.setFont (juce::Font (juce::FontOptions (10.5f)).boldened());
+    g.drawText (label, r.withTrimmedLeft (13.0f), juce::Justification::centred);
+}
+
+void ModSourceChip::mouseDown (const juce::MouseEvent&)
+{
+    dragging = false;
+}
+
+void ModSourceChip::mouseDrag (const juce::MouseEvent& event)
+{
+    if (dragging || event.getDistanceFromDragStart() < 4)
+        return;
+    if (auto* container = juce::DragAndDropContainer::findParentDragContainerFor (this))
+    {
+        dragging = true;
+        container->startDragging (ModulationHost::dragDescription (source), this);
+        repaint();
+    }
+}
+
+void ModSourceChip::mouseUp (const juce::MouseEvent& event)
+{
+    if (! dragging && ! event.mouseWasDraggedSinceMouseDown() && onClick != nullptr)
+        onClick();
+    dragging = false;
+    repaint();
 }
 
 //==============================================================================
@@ -401,9 +562,15 @@ void SectionPanel::add (std::unique_ptr<ParamControl> control, bool sharesPrevio
     controls.push_back (std::move (control));
 }
 
-void SectionPanel::paint (juce::Graphics& g)
+void SectionPanel::addHeaderComponent (std::unique_ptr<juce::Component> component)
 {
-    auto r = getLocalBounds().toFloat().reduced (0.5f);
+    addAndMakeVisible (*component);
+    headerComponents.push_back (std::move (component));
+}
+
+void SectionPanel::paintFrame (juce::Graphics& g, juce::Rectangle<int> bounds, juce::Colour accent, const juce::String& title)
+{
+    auto r = bounds.toFloat().reduced (0.5f);
     g.setColour (kPanel);
     g.fillRoundedRectangle (r, 5.0f);
     g.setColour (kOutline);
@@ -412,389 +579,30 @@ void SectionPanel::paint (juce::Graphics& g)
     g.fillRect (r.removeFromTop (2.5f).reduced (5.0f, 0.0f));
     g.setColour (kText);
     g.setFont (juce::Font (juce::FontOptions (12.0f)).boldened());
-    g.drawText (title.toUpperCase(), getLocalBounds().reduced (8, 3).removeFromTop (15), juce::Justification::centredLeft);
+    g.drawText (title.toUpperCase(), bounds.reduced (8, 3).removeFromTop (15), juce::Justification::centredLeft);
+}
+
+void SectionPanel::paint (juce::Graphics& g)
+{
+    paintFrame (g, getLocalBounds(), accent, title);
 }
 
 void SectionPanel::resized()
 {
     auto area = getLocalBounds().reduced (4, 3);
-    area.removeFromTop (17);
+    auto header = area.removeFromTop (kTitleHeight).withTrimmedTop (1).withTrimmedRight (4);
+    for (auto it = headerComponents.rbegin(); it != headerComponents.rend(); ++it)
+    {
+        auto* chip = dynamic_cast<ModSourceChip*> (it->get());
+        (*it)->setBounds (header.removeFromRight (chip != nullptr ? chip->getPreferredWidth() : 60));
+        header.removeFromRight (4);
+    }
     const int n = (int) cells.size();
     const int rows = juce::jmax (1, (n + columns - 1) / columns);
     const int cw = area.getWidth() / columns, rh = area.getHeight() / rows;
     for (int i = 0; i < n; ++i)
         for (auto* control : cells[(size_t) i])
             control->setBounds (area.getX() + (i % columns) * cw, area.getY() + (i / columns) * rh, cw, rh);
-}
-
-//==============================================================================
-ModAmountCell::ModAmountCell()
-    : juce::Slider (juce::Slider::RotaryVerticalDrag, juce::Slider::NoTextBox)
-{
-    setRange (-1.0, 1.0, 0.01);
-    setDoubleClickReturnValue (true, 0.0);
-    setMouseDragSensitivity (160);
-    setRepaintsOnMouseActivity (true);
-    setMouseCursor (juce::MouseCursor::UpDownResizeCursor);
-}
-
-void ModAmountCell::paint (juce::Graphics& g)
-{
-    auto r = getLocalBounds().toFloat().reduced (2.0f);
-    if (! isEnabled())
-    {
-        g.setColour (kPanel.darker (0.25f));
-        g.fillRoundedRectangle (r, 4.0f);
-        g.setColour (kOutline);
-        g.fillRect (juce::Rectangle<float> (juce::jmin (14.0f, r.getWidth() * 0.4f), 1.5f).withCentre (r.getCentre()));
-        return;
-    }
-
-    g.setColour (kBackground);
-    g.fillRoundedRectangle (r, 4.0f);
-    g.setColour (kOutline);
-    g.fillRect (juce::Rectangle<float> (1.0f, r.getHeight() * 0.5f).withCentre (r.getCentre()));
-
-    // The bar grows from the centre: right and green for positive, left and red for negative amounts.
-    const float amount = (float) getValue();
-    if (amount != 0.0f)
-    {
-        const auto colour = amount > 0.0f ? kPerfAccent : kNegative;
-        const float from = r.getCentreX(), to = from + amount * (r.getWidth() * 0.5f - 3.0f);
-        auto bar = juce::Rectangle<float>::leftTopRightBottom (juce::jmin (from, to), r.getY() + 4.0f,
-                                                               juce::jmax (from, to), r.getBottom() - 4.0f);
-        g.setColour (colour.withAlpha (0.3f));
-        g.fillRoundedRectangle (bar, 3.0f);
-        g.setColour (colour);
-        g.fillRect (amount > 0.0f ? bar.removeFromRight (2.0f) : bar.removeFromLeft (2.0f));
-
-        g.setColour (kText);
-        g.setFont (juce::Font (juce::FontOptions (r.getWidth() < 60.0f ? 10.5f : 12.5f)).boldened());
-        g.drawFittedText ((amount > 0.0f ? "+" : "") + juce::String (amount, 2), r.toNearestInt(),
-                          juce::Justification::centred, 1, 0.7f);
-    }
-
-    g.setColour (isMouseOverOrDragging() ? kText.withAlpha (0.7f) : kOutline);
-    g.drawRoundedRectangle (r, 4.0f, 1.0f);
-}
-
-//==============================================================================
-ModMatrixGrid::ModMatrixGrid (ModMatrix& m, bool isDirect)
-    : matrix (&m), direct (isDirect)
-{
-    const int columns = columnCount();
-    rowLabels.resize ((size_t) ModMatrixData::sourceCount);
-    columnLabels.resize ((size_t) columns);
-    activeRows.assign (rowLabels.size(), false);
-    activeColumns.assign (columnLabels.size(), false);
-
-    cells.reserve ((size_t) (ModMatrixData::sourceCount * columns));
-    for (int source = 0; source < ModMatrixData::sourceCount; ++source)
-        for (int target = 0; target < columns; ++target)
-        {
-            auto cell = std::make_unique<ModAmountCell>();
-            const auto route = juce::String (ModMatrix::getSourceName ((ModSource) source)) + " -> " + targetName (target);
-            cell->setTooltip (route);
-            if (direct && ModMatrix::isPanelDuplicate ((ModSource) source, (DirectModTarget) target))
-            {
-                cell->setEnabled (false);
-                cell->setTooltip (route + " (already a knob on the panel)");
-            }
-            cell->onValueChange = [this, source, target, control = cell.get()]
-            {
-                if (! updating && ! setAmountAt (source, target, (float) control->getValue()))
-                    control->setValue (amountAt (source, target), juce::dontSendNotification);
-            };
-            addAndMakeVisible (*cell);
-            cells.push_back (std::move (cell));
-        }
-    startTimerHz (15);
-}
-
-int ModMatrixGrid::columnCount() const noexcept
-{
-    return direct ? ModMatrixData::directTargetCount : ModMatrixData::targetCount;
-}
-
-juce::String ModMatrixGrid::targetName (int target) const
-{
-    return direct ? ModMatrix::getDirectTargetName ((DirectModTarget) target) : ModMatrix::getTargetName ((ModTarget) target);
-}
-
-void ModMatrixGrid::setMatrix (ModMatrix& m)
-{
-    matrix = &m;
-    timerCallback();
-}
-
-float ModMatrixGrid::amountAt (int source, int target) const noexcept
-{
-    if (direct)
-        return matrix->getDirectAmount ((ModSource) source, (DirectModTarget) target);
-    return matrix->getFixedAmount ((ModSource) source, (ModTarget) target);
-}
-
-bool ModMatrixGrid::setAmountAt (int source, int target, float amount)
-{
-    if (direct)
-        return matrix->setDirectAmount ((ModSource) source, (DirectModTarget) target, amount);
-    matrix->setFixedAmount ((ModSource) source, (ModTarget) target, amount);
-    return true;
-}
-
-// Clears only this page's cells: ModMatrix::clearSource() would also wipe the other page.
-void ModMatrixGrid::clearRow (int source)
-{
-    for (int target = 0; target < columnCount(); ++target)
-        if (amountAt (source, target) != 0.0f)
-            setAmountAt (source, target, 0.0f);
-    timerCallback();
-}
-
-void ModMatrixGrid::clearColumn (int target)
-{
-    if (direct)
-        matrix->clearDirectTarget ((DirectModTarget) target);
-    else
-        matrix->clearTarget ((ModTarget) target);
-    timerCallback();
-}
-
-juce::Rectangle<int> ModMatrixGrid::rowClearButton (juce::Rectangle<int> label) noexcept
-{
-    return label.removeFromRight (22).withSizeKeepingCentre (16, 16);
-}
-
-juce::Rectangle<int> ModMatrixGrid::columnClearButton (juce::Rectangle<int> label) noexcept
-{
-    return label.removeFromBottom (18).withSizeKeepingCentre (16, 16);
-}
-
-std::pair<int, int> ModMatrixGrid::clearButtonAt (juce::Point<int> position) const noexcept
-{
-    for (size_t source = 0; source < rowLabels.size(); ++source)
-        if (activeRows[source] && rowClearButton (rowLabels[source]).expanded (3).contains (position))
-            return { (int) source, -1 };
-    for (size_t target = 0; target < columnLabels.size(); ++target)
-        if (activeColumns[target] && columnClearButton (columnLabels[target]).expanded (3).contains (position))
-            return { -1, (int) target };
-    return { -1, -1 };
-}
-
-void ModMatrixGrid::mouseDown (const juce::MouseEvent& event)
-{
-    const auto [source, target] = clearButtonAt (event.getPosition());
-    if (source >= 0)
-        clearRow (source);
-    else if (target >= 0)
-        clearColumn (target);
-    else
-        return;
-    hoveredClear = { -1, -1 };
-    setMouseCursor (juce::MouseCursor::NormalCursor);
-}
-
-void ModMatrixGrid::mouseMove (const juce::MouseEvent& event)
-{
-    const auto hit = clearButtonAt (event.getPosition());
-    if (hit == hoveredClear)
-        return;
-    hoveredClear = hit;
-    setMouseCursor (hit.first >= 0 || hit.second >= 0 ? juce::MouseCursor::PointingHandCursor : juce::MouseCursor::NormalCursor);
-    repaint();
-}
-
-void ModMatrixGrid::mouseExit (const juce::MouseEvent&)
-{
-    if (hoveredClear == std::pair<int, int> { -1, -1 })
-        return;
-    hoveredClear = { -1, -1 };
-    setMouseCursor (juce::MouseCursor::NormalCursor);
-    repaint();
-}
-
-void ModMatrixGrid::timerCallback()
-{
-    const int columns = columnCount();
-    std::vector<bool> rows (activeRows.size(), false), targets (activeColumns.size(), false);
-    {
-        juce::ScopedValueSetter<bool> guard (updating, true);
-        for (int source = 0; source < ModMatrixData::sourceCount; ++source)
-            for (int target = 0; target < columns; ++target)
-            {
-                const float amount = amountAt (source, target);
-                cells[(size_t) (source * columns + target)]->setValue (amount, juce::dontSendNotification);
-                if (amount != 0.0f)
-                {
-                    rows[(size_t) source] = true;
-                    targets[(size_t) target] = true;
-                }
-            }
-    }
-    if (rows != activeRows || targets != activeColumns)
-    {
-        activeRows = std::move (rows);
-        activeColumns = std::move (targets);
-        repaint();
-    }
-}
-
-void ModMatrixGrid::paint (juce::Graphics& g)
-{
-    // Alternate row shading keeps a source readable across the wide direct-mapping grid.
-    for (size_t source = 0; source < rowLabels.size(); ++source)
-    {
-        const auto row = rowLabels[source].withRight (getWidth());
-        if (source % 2 == 0)
-        {
-            g.setColour (kBackground.withAlpha (0.35f));
-            g.fillRoundedRectangle (row.toFloat(), 4.0f);
-        }
-        const bool active = activeRows[source];
-        auto label = rowLabels[source].withTrimmedLeft (10);
-        if (active)
-        {
-            const auto button = rowClearButton (rowLabels[source]);
-            paintClearButton (g, button, hoveredClear.first == (int) source);
-            label.setRight (button.getX() - 4);
-        }
-        g.setColour (active ? kText : kTextDim);
-        g.setFont (juce::Font (juce::FontOptions (13.0f)).withStyle (active ? juce::Font::bold : juce::Font::plain));
-        g.drawFittedText (ModMatrix::getSourceName ((ModSource) source), label, juce::Justification::centredLeft, 1, 0.8f);
-    }
-
-    for (size_t target = 0; target < columnLabels.size(); ++target)
-    {
-        const bool active = activeColumns[target];
-        const auto label = columnLabels[target];
-        if (active)
-            paintClearButton (g, columnClearButton (label), hoveredClear.second == (int) target);
-        g.setColour (active ? kText : kTextDim);
-        g.setFont (juce::Font (juce::FontOptions (direct ? 10.5f : 12.5f)).withStyle (active ? juce::Font::bold : juce::Font::plain));
-        // Multi-word names wrap instead of squashing, so the headers keep one font size; a single
-        // long word (Portamento) may still be narrowed rather than cut off.
-        const auto name = targetName ((int) target);
-        g.drawFittedText (name, label.withTrimmedBottom (20).reduced (2, 0), juce::Justification::centredBottom, 3,
-                          name.containsChar (' ') ? 1.0f : 0.7f);
-    }
-}
-
-void ModMatrixGrid::resized()
-{
-    auto area = getLocalBounds();
-    const int columns = columnCount();
-    const int labelWidth = 160;
-    auto header = area.removeFromTop (direct ? 64 : 44);
-    header.removeFromLeft (labelWidth);
-    const float columnWidth = (float) header.getWidth() / (float) columns;
-    const float rowHeight = (float) area.getHeight() / (float) ModMatrixData::sourceCount;
-
-    for (int target = 0; target < columns; ++target)
-        columnLabels[(size_t) target] = juce::Rectangle<float> ((float) header.getX() + (float) target * columnWidth, (float) header.getY(),
-                                                                columnWidth, (float) header.getHeight()).toNearestInt();
-
-    for (int source = 0; source < ModMatrixData::sourceCount; ++source)
-    {
-        auto row = juce::Rectangle<float> ((float) area.getX(), (float) area.getY() + (float) source * rowHeight,
-                                           (float) area.getWidth(), rowHeight).toNearestInt();
-        rowLabels[(size_t) source] = row.removeFromLeft (labelWidth);
-        for (int target = 0; target < columns; ++target)
-            cells[(size_t) (source * columns + target)]->setBounds (
-                juce::Rectangle<float> ((float) row.getX() + (float) target * columnWidth, (float) row.getY(),
-                                        columnWidth, (float) row.getHeight()).toNearestInt());
-    }
-}
-
-//==============================================================================
-ModMatrixPage::ModMatrixPage (SynthEngine& e, Layer initialLayer)
-    : engine (e), layer (initialLayer),
-      matrixGrid (engine.modMatrix (initialLayer), false), directGrid (engine.modMatrix (initialLayer), true)
-{
-    setOpaque (true);
-    addAndMakeVisible (matrixGrid);
-    addChildComponent (directGrid);
-
-    for (auto* tab : { &matrixTab, &directTab })
-    {
-        tab->setClickingTogglesState (true);
-        tab->setRadioGroupId (1);
-        addAndMakeVisible (*tab);
-    }
-    matrixTab.setTooltip ("Destinations that exist only in the matrix");
-    directTab.setTooltip ("Modulate the panel parameters directly");
-    matrixTab.onClick = [this] { showDirect (false); };
-    directTab.onClick = [this] { showDirect (true); };
-
-    clearAllButton.setTooltip ("Remove every route of this layer (both MATRIX and DIRECT MAPPING)");
-    clearAllButton.onClick = [this] { engine.modMatrix (layer).clearAll(); };
-    closeButton.onClick = [this] { if (onClose != nullptr) onClose(); };
-    addAndMakeVisible (clearAllButton);
-    addAndMakeVisible (closeButton);
-
-    hint.setJustificationType (juce::Justification::centredLeft);
-    help.setJustificationType (juce::Justification::centredRight);
-    help.setText ("Drag a cell up/down to set it   |   double-click resets   |   x clears a row or column",
-                  juce::dontSendNotification);
-    for (auto* label : { &hint, &help })
-    {
-        label->setColour (juce::Label::textColourId, kTextDim);
-        label->setFont (juce::Font (juce::FontOptions (12.5f)));
-        addAndMakeVisible (*label);
-    }
-
-    setLayer (initialLayer);
-    showDirect (false);
-}
-
-void ModMatrixPage::setLayer (Layer selectedLayer)
-{
-    layer = selectedLayer;
-    matrixGrid.setMatrix (engine.modMatrix (layer));
-    directGrid.setMatrix (engine.modMatrix (layer));
-    for (auto* tab : { &matrixTab, &directTab })
-        tab->setColour (juce::TextButton::buttonOnColourId, accentForLayer (layer).darker (0.45f));
-    repaint();
-}
-
-void ModMatrixPage::showDirect (bool direct)
-{
-    matrixTab.setToggleState (! direct, juce::dontSendNotification);
-    directTab.setToggleState (direct, juce::dontSendNotification);
-    matrixGrid.setVisible (! direct);
-    directGrid.setVisible (direct);
-    hint.setText (direct ? "Rows: sources. Columns: panel parameters. Greyed cells already have a knob on the panel."
-                         : "Rows: sources. Columns: destinations that exist only in the matrix.",
-                  juce::dontSendNotification);
-}
-
-void ModMatrixPage::paint (juce::Graphics& g)
-{
-    const auto accent = accentForLayer (layer);
-    paintPageFrame (g, getLocalBounds(), accent);
-    paintPageTitle (g, pageContent (getLocalBounds()).removeFromTop (kPageHeader), "MOD MATRIX",
-                    layer == Layer::upper ? "UPPER" : "LOWER", accent);
-}
-
-void ModMatrixPage::resized()
-{
-    auto area = pageContent (getLocalBounds());
-    auto header = area.removeFromTop (kPageHeader);
-    clearAllButton.setBounds (header.removeFromRight (110));
-    auto tabs = juce::Rectangle<int> (0, 0, 2 * 170 + 4, header.getHeight()).withCentre ({ getLocalBounds().getCentreX(), header.getCentreY() });
-    matrixTab.setBounds (tabs.removeFromLeft (170));
-    tabs.removeFromLeft (4);
-    directTab.setBounds (tabs);
-
-    area.removeFromTop (8);
-    auto info = area.removeFromTop (22);
-    help.setBounds (info.removeFromRight (580));
-    hint.setBounds (info);
-    area.removeFromTop (8);
-
-    closeButton.setBounds (area.removeFromBottom (kPageFooter).withSizeKeepingCentre (140, 32));
-    area.removeFromBottom (8);
-    matrixGrid.setBounds (area);
-    directGrid.setBounds (area);
 }
 
 //==============================================================================
@@ -1045,7 +853,7 @@ NSynthAudioProcessorEditor::NSynthAudioProcessorEditor (NSynthAudioProcessor& p)
             openPresetBrowser (presetBrowser->getKind());
     };
     for (auto* b : { &prevPreset, &nextPreset, &savePreset, &upperSelect, &lowerSelect, &initLayer, &copyUpToLow, &copyLowToUp,
-                     &loadPatch, &savePatch, &comparePatch, &modMatrixButton, &waveBrowserButton })
+                     &loadPatch, &savePatch, &comparePatch, &synthTab, &modTab, &fxTab, &waveBrowserButton })
         content.addAndMakeVisible (*b);
 
     prevPreset.setTooltip ("Previous preset in the browser list");
@@ -1064,8 +872,23 @@ NSynthAudioProcessorEditor::NSynthAudioProcessorEditor (NSynthAudioProcessor& p)
         if (! synth.setPatchCompare (bottomLayer, comparePatch.getToggleState()))
             comparePatch.setToggleState (synth.isPatchCompareActive (bottomLayer), juce::dontSendNotification);
     };
-    modMatrixButton.onClick = [this] { modMatrixPage->setVisible (true); };
+    waveBrowserButton.setTooltip ("The 32 alternative waveforms of DDS1: import and export");
     waveBrowserButton.onClick = [this] { waveBrowserPage->setVisible (true); };
+
+    // Page tabs: one segmented control.
+    synthTab.setTooltip ("Oscillators, filters, envelopes, LFOs, voicing and macros");
+    modTab.setTooltip ("MSEGs and the modulation slots");
+    fxTab.setTooltip ("The effect chain");
+    for (auto [button, target] : { std::pair { &synthTab, Page::synth }, std::pair { &modTab, Page::mod }, std::pair { &fxTab, Page::fx } })
+    {
+        button->setRadioGroupId (0x5a6e);
+        button->setClickingTogglesState (true);
+        button->setColour (juce::TextButton::buttonOnColourId, kOutline.brighter (0.25f));
+        button->onClick = [this, target = target] { showPage (target); };
+    }
+    synthTab.setConnectedEdges (juce::Button::ConnectedOnRight);
+    modTab.setConnectedEdges (juce::Button::ConnectedOnLeft | juce::Button::ConnectedOnRight);
+    fxTab.setConnectedEdges (juce::Button::ConnectedOnLeft);
 
     upperSelect.setClickingTogglesState (false);
     upperSelect.onClick = [this] { selectBottomLayer (Layer::upper); };
@@ -1078,11 +901,17 @@ NSynthAudioProcessorEditor::NSynthAudioProcessorEditor (NSynthAudioProcessor& p)
     voiceMeter.setColour (juce::Label::textColourId, kTextDim);
     content.addAndMakeVisible (voiceMeter);
 
-    // One layer at a time, three rows in signal-flow order (column counts set the section widths).
+    // SYNTH page: three rows in signal-flow order (column counts set the section widths).
     const std::vector<std::pair<Section, int>> rowLayout[3] = {
         { { Section::dds1, 2 }, { Section::dds2, 2 }, { Section::mixer, 1 }, { Section::ddsMod, 3 }, { Section::vcf, 4 }, { Section::vca, 2 } },
         { { Section::env1, 4 }, { Section::env2, 3 }, { Section::lfo1, 3 }, { Section::perfControl, 5 } },
-        { { Section::voiceAssign, 5 }, { Section::fx, 4 }, { Section::delay, 4 }, { Section::reverb, 4 } } };
+        { { Section::voiceAssign, 5 }, { Section::filter2, 5 }, { Section::macros, 4 } } };
+
+    const SwitchedCellRegistrar registerSwitched = [this] (ParamControl* whenOff, ParamControl* whenOn, const char* selector)
+    {
+        switchedCells.push_back ({ whenOff, whenOn, synth.getState().getRawParameterValue (layerParamId (whenOff->getLayer(), selector)) });
+    };
+    const ControlFactory factory = [this] (Layer layer, const char* suffix) { return makeControl (layer, suffix); };
 
     for (auto layer : { Layer::upper, Layer::lower })
     {
@@ -1094,6 +923,10 @@ NSynthAudioProcessorEditor::NSynthAudioProcessorEditor (NSynthAudioProcessor& p)
                 ui.rows[row].push_back (makeSection (layer, section, cols, accent));
                 content.addChildComponent (*ui.rows[row].back());
             }
+        ui.modPage = std::make_unique<ModPage> (synth.getEngine(), layer, accent, factory, registerSwitched);
+        content.addChildComponent (*ui.modPage);
+        ui.fxPage = std::make_unique<FxPage> (synth.getState(), synth.getEngine(), layer, accent, factory, registerSwitched);
+        content.addChildComponent (*ui.fxPage);
     }
 
     upperSelect.setTooltip ("Edit the UPPER layer (the patch name is shown on the tab)");
@@ -1120,10 +953,6 @@ NSynthAudioProcessorEditor::NSynthAudioProcessorEditor (NSynthAudioProcessor& p)
         performancePanel->add (std::move (control));
     }
     content.addAndMakeVisible (*performancePanel);
-    modMatrixPage = std::make_unique<ModMatrixPage> (synth.getEngine(), bottomLayer);
-    modMatrixPage->onClose = [this] { modMatrixPage->setVisible (false); };
-    content.addAndMakeVisible (*modMatrixPage);
-    modMatrixPage->setVisible (false);
     waveBrowserPage = std::make_unique<WaveBrowserPage> (synth.getEngine());
     waveBrowserPage->onClose = [this] { waveBrowserPage->setVisible (false); };
     content.addAndMakeVisible (*waveBrowserPage);
@@ -1139,10 +968,10 @@ NSynthAudioProcessorEditor::NSynthAudioProcessorEditor (NSynthAudioProcessor& p)
         sizeBox.addItem (juce::String (pct) + " %", pct);
     sizeBox.onChange = [this] { if (sizeBox.getSelectedId() > 0) setScale ((float) sizeBox.getSelectedId() / 100.0f); };
     content.addAndMakeVisible (sizeBox);
-    // The full-size pages cover the header, including the size box added after them.
-    modMatrixPage->toFront (false);
+    // The full-size page covers the header, including the size box added after it.
     waveBrowserPage->toFront (false);
 
+    synthTab.setToggleState (true, juce::dontSendNotification);
     selectBottomLayer (Layer::upper);
     updateSwitchedControls();
     layoutContent();
@@ -1158,7 +987,7 @@ NSynthAudioProcessorEditor::NSynthAudioProcessorEditor (NSynthAudioProcessor& p)
     setScale (savedScale);
 
     refreshDisplay();
-    startTimerHz (10);
+    startTimerHz (30);
 }
 
 NSynthAudioProcessorEditor::~NSynthAudioProcessorEditor()
@@ -1166,12 +995,23 @@ NSynthAudioProcessorEditor::~NSynthAudioProcessorEditor()
     setLookAndFeel (nullptr);
 }
 
+std::unique_ptr<ParamControl> NSynthAudioProcessorEditor::makeControl (Layer layer, const char* suffix)
+{
+    const int index = findLayerSpecIndex (suffix);
+    jassert (index >= 0);
+    const auto& spec = getLayerParamSpecs()[(size_t) index];
+    auto control = std::make_unique<ParamControl> (synth.getState(), layerParamId (layer, spec.suffix), spec, accentForLayer (layer));
+    configureMidiLearn (*control);
+    control->setModulationTarget (this, layer, index);
+    layers[(size_t) toInt (layer)].controls.push_back (control.get());
+    return control;
+}
+
 std::unique_ptr<SectionPanel> NSynthAudioProcessorEditor::makeSection (Layer layer, Section section, int columns, juce::Colour accent)
 {
     // Two controls in one cell; the selector parameter (on = value > 0.5) decides which one is shown.
     struct SharedCell { const char* first; const char* second; const char* selector; bool secondShownWhenOn; };
     static constexpr SharedCell sharedCells[] = {
-        { pid::delayMs, pid::delayDivision, pid::delaySync, true }, // SYNC on: division, off: milliseconds
         { pid::velFixed, pid::velCurve, pid::velMode, false },      // Static: fixed velocity, Dynamic: curve
     };
 
@@ -1185,8 +1025,7 @@ std::unique_ptr<SectionPanel> NSynthAudioProcessorEditor::makeSection (Layer lay
     for (auto& spec : getLayerParamSpecs())
         if (spec.section == section)
         {
-            auto control = std::make_unique<ParamControl> (synth.getState(), layerParamId (layer, spec.suffix), spec, accent);
-            configureMidiLearn (*control);
+            auto control = makeControl (layer, spec.suffix);
             bool shares = false;
             for (const auto& cell : sharedCells)
                 if (juce::String (spec.suffix) == cell.second && previous != nullptr
@@ -1202,6 +1041,30 @@ std::unique_ptr<SectionPanel> NSynthAudioProcessorEditor::makeSection (Layer lay
             previous = control.get();
             panel->add (std::move (control), shares);
         }
+
+    // Modulation sources of the page: drag their chips onto any knob.
+    auto addChip = [&] (ModSource source)
+    {
+        auto chip = std::make_unique<ModSourceChip> (source, accent);
+        panel->addHeaderComponent (std::move (chip));
+    };
+    if (section == Section::env1)        addChip (ModSource::env1);
+    if (section == Section::env2)        addChip (ModSource::env2);
+    if (section == Section::lfo1)        addChip (ModSource::lfo1);
+    if (section == Section::perfControl) addChip (ModSource::lfo2);
+    if (section == Section::macros)
+    {
+        for (int m = 0; m < ModMatrixData::kMacros; ++m)
+            addChip ((ModSource) ((int) ModSource::macro1 + m));
+        // Macro knobs show their (editable) names.
+        int m = 0;
+        for (auto& control : panel->getControls())
+        {
+            control->setEditableCaption ([this, layer, m] { return synth.getEngine().modMatrix (layer).getMacroName (m); },
+                                         [this, layer, m] (const juce::String& name) { synth.getEngine().modMatrix (layer).setMacroName (m, name); });
+            ++m;
+        }
+    }
     return panel;
 }
 
@@ -1214,19 +1077,140 @@ void NSynthAudioProcessorEditor::configureMidiLearn (ParamControl& control)
         [this, id] { return synth.getEngine().getMidiLearnCC (id); });
 }
 
+void NSynthAudioProcessorEditor::showPage (Page newPage)
+{
+    page = newPage;
+    synthTab.setToggleState (page == Page::synth, juce::dontSendNotification);
+    modTab.setToggleState (page == Page::mod, juce::dontSendNotification);
+    fxTab.setToggleState (page == Page::fx, juce::dontSendNotification);
+    updatePageVisibility();
+}
+
+void NSynthAudioProcessorEditor::updatePageVisibility()
+{
+    for (auto l : { Layer::upper, Layer::lower })
+    {
+        auto& ui = layers[(size_t) toInt (l)];
+        const bool shown = l == bottomLayer;
+        for (auto& row : ui.rows)
+            for (auto& s : row)
+                s->setVisible (shown && page == Page::synth);
+        ui.modPage->setVisible (shown && page == Page::mod);
+        ui.fxPage->setVisible (shown && page == Page::fx);
+    }
+    updateModulationDisplay();
+}
+
 void NSynthAudioProcessorEditor::selectBottomLayer (Layer layer)
 {
     bottomLayer = layer;
-    if (modMatrixPage != nullptr)
-        modMatrixPage->setLayer (layer);
     if (presetBrowser != nullptr && presetBrowser->getTargetLayer() != layer)
         presetBrowser->setTargetLayer (layer);
-    for (auto l : { Layer::upper, Layer::lower })
-        for (auto& row : layers[(size_t) toInt (l)].rows)
-            for (auto& s : row)
-                s->setVisible (l == layer);
+    updatePageVisibility();
     upperSelect.setToggleState (layer == Layer::upper, juce::dontSendNotification);
     lowerSelect.setToggleState (layer == Layer::lower, juce::dontSendNotification);
+}
+
+//==============================================================================
+bool NSynthAudioProcessorEditor::canModulate (Layer, int parameterIndex) const
+{
+    return ModMatrix::isModulatable (parameterIndex);
+}
+
+void NSynthAudioProcessorEditor::addModulationMenuItems (juce::PopupMenu& menu, Layer layer, int parameterIndex)
+{
+    // ids: base + source = add; base + 100 + slot = remove; base + 200 = remove all; base + 300 = MOD page.
+    auto& matrix = synth.getEngine().modMatrix (layer);
+    juce::PopupMenu add;
+    for (int source = 0; source < (int) ModSource::count; ++source)
+    {
+        const auto name = source >= (int) ModSource::macro1 ? matrix.getMacroName (source - (int) ModSource::macro1)
+                                                            : juce::String (ModMatrix::getSourceName ((ModSource) source));
+        add.addItem (kModulationMenuBase + source, name);
+    }
+    menu.addSubMenu ("Modulate with", add);
+
+    int routes = 0;
+    for (int i = 0; i < ModMatrixData::kMaxSlots; ++i)
+    {
+        const auto slot = matrix.getSlot (i);
+        if (slot.destination != parameterIndex || slot.source < 0)
+            continue;
+        const auto sourceName = slot.source >= (int) ModSource::macro1 ? matrix.getMacroName (slot.source - (int) ModSource::macro1)
+                                                                        : juce::String (ModMatrix::getSourceName ((ModSource) slot.source));
+        menu.addItem (kModulationMenuBase + 100 + i, "Remove " + sourceName + " ("
+                      + (slot.amount > 0.0f ? "+" : "") + juce::String (juce::roundToInt (slot.amount * 100.0f)) + " %)");
+        ++routes;
+    }
+    if (routes > 1)
+        menu.addItem (kModulationMenuBase + 200, "Remove all modulation");
+    menu.addItem (kModulationMenuBase + 300, "Open the MOD page");
+}
+
+void NSynthAudioProcessorEditor::handleModulationMenu (int result, Layer layer, int parameterIndex)
+{
+    auto& matrix = synth.getEngine().modMatrix (layer);
+    const int id = result - kModulationMenuBase;
+    if (id >= 0 && id < (int) ModSource::count)
+        dropModulationSource ((ModSource) id, layer, parameterIndex);
+    else if (id >= 100 && id < 100 + ModMatrixData::kMaxSlots)
+        matrix.removeSlot (id - 100);
+    else if (id == 200)
+        matrix.clearDestination (parameterIndex);
+    else if (id == 300)
+        showPage (Page::mod);
+    updateModulationDisplay();
+}
+
+void NSynthAudioProcessorEditor::dropModulationSource (ModSource source, Layer layer, int parameterIndex)
+{
+    // LFO-like sources swing around the knob; the others push it one way.
+    const bool centred = source == ModSource::lfo1 || source == ModSource::lfo2 || source == ModSource::dds2
+                      || source == ModSource::perNotePitch || source == ModSource::ribbon;
+    auto& matrix = synth.getEngine().modMatrix (layer);
+    for (int i = 0; i < ModMatrixData::kMaxSlots; ++i)
+        if (matrix.getSlot (i).source == (int) source && matrix.getSlot (i).destination == parameterIndex)
+            return;   // already routed: keep its amount
+    matrix.addRoute (source, parameterIndex, centred ? 0.25f : 0.35f, centred);
+    updateModulationDisplay();
+}
+
+void NSynthAudioProcessorEditor::updateModulationDisplay()
+{
+    auto& layerUi = layers[(size_t) toInt (bottomLayer)];
+    const auto& engineLayer = synth.getEngine().layer (bottomLayer);
+    const auto data = synth.getEngine().modMatrix (bottomLayer).snapshot();
+
+    // Reachable range per parameter (sum of the slots' swings).
+    std::array<float, kLayerParamCount> low {}, high {};
+    for (const auto& slot : data->slots)
+    {
+        if (! slot.isActive())
+            continue;
+        auto& lo = low[(size_t) slot.destination];
+        auto& hi = high[(size_t) slot.destination];
+        if (slot.bipolar)
+        {
+            lo -= std::abs (slot.amount);
+            hi += std::abs (slot.amount);
+        }
+        else if (slot.amount > 0.0f) hi += slot.amount;
+        else                         lo += slot.amount;
+    }
+    for (auto* control : layerUi.controls)
+    {
+        const int index = control->getParameterIndex();
+        if (index < 0)
+            continue;
+        bool shown = true;   // visible on the current page (isShowing() also needs a window)
+        for (const juce::Component* c = control; c != nullptr && c != &content && shown; c = c->getParentComponent())
+            shown = c->isVisible();
+        if (! shown)
+            continue;
+        const bool modulated = data->modulated[(size_t) index];
+        control->setModulationDisplay (modulated, low[(size_t) index], high[(size_t) index],
+                                       modulated ? engineLayer.getModulationOffset (index) : 0.0f);
+    }
 }
 
 void NSynthAudioProcessorEditor::setScale (float newScale)
@@ -1240,21 +1224,21 @@ void NSynthAudioProcessorEditor::layoutContent()
     auto r = juce::Rectangle<int> (0, 0, kDesignWidth, kDesignHeight).reduced (6);
 
     auto header = r.removeFromTop (40);
-    title.setBounds (header.removeFromLeft (110));
-    modMatrixButton.setBounds (header.removeFromLeft (100).withSizeKeepingCentre (100, 28));
-    header.removeFromLeft (6);
-    waveBrowserButton.setBounds (header.removeFromLeft (94).withSizeKeepingCentre (94, 28));
-    header.removeFromLeft (6);
+    title.setBounds (header.removeFromLeft (100));
+    for (auto* tab : { &synthTab, &modTab, &fxTab })
+        tab->setBounds (header.removeFromLeft (68).withSizeKeepingCentre (68, 28));
+    header.removeFromLeft (12);
     sizeBox.setBounds (header.removeFromRight (84).withSizeKeepingCentre (84, 26));
     header.removeFromRight (8);
-    voiceMeter.setBounds (header.removeFromRight (190));
-    auto bar = header.withSizeKeepingCentre (juce::jmin (600, header.getWidth() - 8), 30);
+    waveBrowserButton.setBounds (header.removeFromRight (94).withSizeKeepingCentre (94, 28));
+    header.removeFromRight (8);
+    voiceMeter.setBounds (header.removeFromRight (140));
+    auto bar = header.withSizeKeepingCentre (juce::jmin (580, header.getWidth() - 16), 30);
     prevPreset.setBounds (bar.removeFromLeft (30));
     savePreset.setBounds (bar.removeFromRight (62));
     bar.removeFromRight (6);
     nextPreset.setBounds (bar.removeFromRight (30));
     presetDisplay.setBounds (bar.reduced (4, 0));
-    modMatrixPage->setBounds (juce::Rectangle<int> (0, 0, kDesignWidth, kDesignHeight));
     waveBrowserPage->setBounds (juce::Rectangle<int> (0, 0, kDesignWidth, kDesignHeight));
     presetBrowser->setBounds (juce::Rectangle<int> (0, 0, kDesignWidth, kDesignHeight));
     r.removeFromTop (4);
@@ -1296,6 +1280,8 @@ void NSynthAudioProcessorEditor::layoutContent()
     {
         auto area = r;
         auto& ui = layers[(size_t) toInt (layer)];
+        ui.modPage->setBounds (r);
+        ui.fxPage->setBounds (r);
         for (size_t row = 0; row < 3; ++row)
         {
             auto rowArea = row < 2 ? area.removeFromTop (rowHeights[row]) : area;
@@ -1325,7 +1311,6 @@ void NSynthAudioProcessorEditor::resized()
 
 void NSynthAudioProcessorEditor::openPresetBrowser (nSynth::PresetKind kind)
 {
-    modMatrixPage->setVisible (false);
     waveBrowserPage->setVisible (false);
     presetBrowser->open (kind, bottomLayer);
 }
@@ -1405,6 +1390,10 @@ void NSynthAudioProcessorEditor::updateSwitchedControls()
 
 void NSynthAudioProcessorEditor::timerCallback()
 {
+    // Modulation rings at the full timer rate, everything else at 10 Hz.
+    updateModulationDisplay();
+    if (++timerTicks % 3 != 0)
+        return;
     updateSwitchedControls();
     const auto dropped = synth.getEngine().getDroppedMidiParameterChanges();
     if (dropped > lastMidiParameterDrops)

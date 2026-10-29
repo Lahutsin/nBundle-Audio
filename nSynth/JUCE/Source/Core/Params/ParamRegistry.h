@@ -13,7 +13,9 @@ namespace nsynth
 enum class Section
 {
     dds1, dds2, mixer, ddsMod, vcf, vca, env1, env2, lfo1, perfControl,
-    voiceAssign, fx, delay, reverb, performance
+    voiceAssign, fx, delay, reverb, performance,
+    // Added in parameter version 2 (appended after every version 1 parameter).
+    macros, mseg1, mseg2, filter2, fxDistortion, fxEq, fxCompressor, fxPhaser, fxFlanger
 };
 
 enum class Kind { floatParam, choiceParam, intParam, boolParam };
@@ -40,11 +42,14 @@ struct ParamSpec
     const char* unit { "" };
     int midiCC { -1 };          // external MIDI CC number, -1 = none
     const char* notes { "" };
+    int version { 1 };          // juce::ParameterID version hint (AU parameter ordering)
 };
 
 const std::vector<ParamSpec>& getLayerParamSpecs();
 const std::vector<ParamSpec>& getPerformanceParamSpecs();
 const ParamSpec* findLayerSpec (const juce::String& suffix);
+// Index of a layer parameter in getLayerParamSpecs(), -1 if unknown.
+int findLayerSpecIndex (const juce::String& suffix);
 
 juce::String layerPrefix (Layer layer);
 juce::String layerParamId (Layer layer, const char* suffix);
@@ -52,6 +57,8 @@ juce::String perfParamId (const char* suffix);
 juce::String sectionName (Section s);
 
 juce::NormalisableRange<float> makeRange (const ParamSpec& spec);
+// makeRange() of every layer parameter, built once (getLayerParamSpecs() order).
+const juce::NormalisableRange<float>& getLayerParamRange (int index);
 // Human-readable value text with units (used by the host and the editor) and its inverse.
 juce::String formatValue (const ParamSpec& spec, float value);
 float parseValue (const ParamSpec& spec, const juce::String& text);
@@ -161,6 +168,68 @@ namespace pid
     inline constexpr const char* reverbLowCut = "reverb_lowcut";
     inline constexpr const char* reverbWidth = "reverb_width";
     inline constexpr const char* reverbModulation = "reverb_mod";
+
+    // ---- version 2 -------------------------------------------------------------
+    inline constexpr const char* macro1 = "macro1";
+    inline constexpr const char* macro2 = "macro2";
+    inline constexpr const char* macro3 = "macro3";
+    inline constexpr const char* macro4 = "macro4";
+    inline constexpr const char* macro5 = "macro5";
+    inline constexpr const char* macro6 = "macro6";
+    inline constexpr const char* macro7 = "macro7";
+    inline constexpr const char* macro8 = "macro8";
+    inline constexpr const char* mseg1Mode = "mseg1_mode";
+    inline constexpr const char* mseg1Sync = "mseg1_sync";
+    inline constexpr const char* mseg1Time = "mseg1_time";
+    inline constexpr const char* mseg1Division = "mseg1_div";
+    inline constexpr const char* mseg2Mode = "mseg2_mode";
+    inline constexpr const char* mseg2Sync = "mseg2_sync";
+    inline constexpr const char* mseg2Time = "mseg2_time";
+    inline constexpr const char* mseg2Division = "mseg2_div";
+    inline constexpr const char* filter2Routing = "f2_routing";
+    inline constexpr const char* filter2Type = "f2_type";
+    inline constexpr const char* filter2Cutoff = "f2_cutoff";
+    inline constexpr const char* filter2Res = "f2_res";
+    inline constexpr const char* filter2Env = "f2_env";
+    inline constexpr const char* filter2EnvSource = "f2_env_src";
+    inline constexpr const char* filter2Keytrack = "f2_keytrack";
+    inline constexpr const char* filter2Drive = "f2_drive";
+    inline constexpr const char* filter2Mix = "f2_mix";
+    inline constexpr const char* delayOn = "delay_on";
+    inline constexpr const char* delayDuck = "delay_duck";
+    inline constexpr const char* reverbOn = "reverb_on";
+    inline constexpr const char* reverbDuck = "reverb_duck";
+    inline constexpr const char* distOn = "dist_on";
+    inline constexpr const char* distType = "dist_type";
+    inline constexpr const char* distDrive = "dist_drive";
+    inline constexpr const char* distTone = "dist_tone";
+    inline constexpr const char* distMix = "dist_mix";
+    inline constexpr const char* eqOn = "eq_on";
+    inline constexpr const char* eqLowFreq = "eq_low_freq";
+    inline constexpr const char* eqLowGain = "eq_low_gain";
+    inline constexpr const char* eqMidFreq = "eq_mid_freq";
+    inline constexpr const char* eqMidGain = "eq_mid_gain";
+    inline constexpr const char* eqMidQ = "eq_mid_q";
+    inline constexpr const char* eqHighFreq = "eq_high_freq";
+    inline constexpr const char* eqHighGain = "eq_high_gain";
+    inline constexpr const char* compOn = "comp_on";
+    inline constexpr const char* compThreshold = "comp_threshold";
+    inline constexpr const char* compRatio = "comp_ratio";
+    inline constexpr const char* compAttack = "comp_attack";
+    inline constexpr const char* compRelease = "comp_release";
+    inline constexpr const char* compMakeup = "comp_makeup";
+    inline constexpr const char* compKey = "comp_key";
+    inline constexpr const char* compMix = "comp_mix";
+    inline constexpr const char* phaserOn = "phaser_on";
+    inline constexpr const char* phaserRate = "phaser_rate";
+    inline constexpr const char* phaserDepth = "phaser_depth";
+    inline constexpr const char* phaserFeedback = "phaser_fb";
+    inline constexpr const char* phaserMix = "phaser_mix";
+    inline constexpr const char* flangerOn = "flanger_on";
+    inline constexpr const char* flangerRate = "flanger_rate";
+    inline constexpr const char* flangerDepth = "flanger_depth";
+    inline constexpr const char* flangerFeedback = "flanger_fb";
+    inline constexpr const char* flangerMix = "flanger_mix";
 
     // performance
     inline constexpr const char* kbdMode = "kbd_mode";

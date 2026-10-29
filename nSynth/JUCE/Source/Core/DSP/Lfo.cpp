@@ -91,6 +91,12 @@ double delayDivisionBeats (int index) noexcept
     return beats[juce::jlimit (0, (int) std::size (beats) - 1, index)];
 }
 
+double msegDivisionBeats (int index) noexcept
+{
+    static constexpr double beats[] = { 0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0 };   // 1/16 .. 8 bars
+    return beats[juce::jlimit (0, (int) std::size (beats) - 1, index)];
+}
+
 int divisionIndex (float fader, int count) noexcept
 {
     return juce::jlimit (0, count - 1, (int) (juce::jlimit (0.0f, 1.0f, fader) * (float) count));

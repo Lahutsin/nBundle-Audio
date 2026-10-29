@@ -4,137 +4,9 @@
 #include <functional>
 #include "PluginProcessor.h"
 #include "PresetBrowser.h"
-#include "UiPalette.h"
-
-class NSynthLookAndFeel : public juce::LookAndFeel_V4
-{
-public:
-    NSynthLookAndFeel();
-    void drawRotarySlider (juce::Graphics&, int x, int y, int w, int h, float pos, float start, float end, juce::Slider&) override;
-    void drawLinearSlider (juce::Graphics&, int x, int y, int w, int h, float pos, float minPos, float maxPos,
-                           juce::Slider::SliderStyle, juce::Slider&) override;
-    juce::Font getComboBoxFont (juce::ComboBox&) override { return juce::Font (juce::FontOptions (11.5f)); }
-    void drawButtonText (juce::Graphics&, juce::TextButton&, bool shouldDrawButtonAsHighlighted, bool shouldDrawButtonAsDown) override;
-    juce::Label* createSliderTextBox (juce::Slider& s) override;
-
-    static juce::Colour accentFor (const juce::Component&);
-};
-
-// One parameter control (rotary, fader, combo or toggle) with its caption and host attachment.
-class ParamControl : public juce::Component,
-                     public juce::SettableTooltipClient,
-                     private juce::Timer
-{
-public:
-    ParamControl (juce::AudioProcessorValueTreeState& state, const juce::String& paramId,
-                  const nsynth::ParamSpec& spec, juce::Colour accent, const juce::String& captionOverride = {});
-    void resized() override;
-    const juce::String& getParamId() const noexcept { return paramId; }
-    int getChoiceButtonCount() const noexcept { return (int) choiceButtons.size(); }
-    void setMidiLearnHandlers (std::function<bool()> learn, std::function<void()> clear,
-                               std::function<int()> assignedCC);
-    void mouseDown (const juce::MouseEvent& event) override;
-
-private:
-    void timerCallback() override;
-    juce::String paramId;
-    juce::String captionText;
-    juce::Label caption;
-    std::function<bool()> learnMidiCC;
-    std::function<void()> clearMidiCC;
-    std::function<int()> getAssignedMidiCC;
-    std::unique_ptr<juce::Slider> slider;
-    std::unique_ptr<juce::ComboBox> combo;
-    std::unique_ptr<juce::ToggleButton> toggle;
-    std::vector<std::unique_ptr<juce::TextButton>> choiceButtons;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> sliderAttachment;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> comboAttachment;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> buttonAttachment;
-};
-
-// Titled panel laying its controls out on a grid (columns x rows). A control added with
-// sharesPreviousCell occupies the same cell as the one before it (only one is shown at a time).
-class SectionPanel : public juce::Component
-{
-public:
-    SectionPanel (juce::String title, juce::Colour accent, int columns);
-    void add (std::unique_ptr<ParamControl> control, bool sharesPreviousCell = false);
-    int getColumns() const noexcept { return columns; }
-    void paint (juce::Graphics&) override;
-    void resized() override;
-
-private:
-    juce::String title;
-    juce::Colour accent;
-    int columns;
-    std::vector<std::unique_ptr<ParamControl>> controls;
-    std::vector<std::vector<ParamControl*>> cells;
-};
-
-// One mod matrix amount (-1..1): a bar growing from the centre, drag up/down to change it,
-// double-click to reset to 0. Disabled cells are routes the layer panel already provides.
-class ModAmountCell : public juce::Slider
-{
-public:
-    ModAmountCell();
-    void paint (juce::Graphics&) override;
-};
-
-// Sources (rows) x targets (columns). Row and column names show a clear button while they
-// carry any amount.
-class ModMatrixGrid : public juce::Component,
-                      private juce::Timer
-{
-public:
-    ModMatrixGrid (nsynth::ModMatrix& matrix, bool direct);
-    void setMatrix (nsynth::ModMatrix& matrix);
-    void paint (juce::Graphics&) override;
-    void resized() override;
-    void mouseDown (const juce::MouseEvent&) override;
-    void mouseMove (const juce::MouseEvent&) override;
-    void mouseExit (const juce::MouseEvent&) override;
-
-private:
-    void timerCallback() override;
-    int columnCount() const noexcept;
-    // Clear button hit by the point: row (source) >= 0 or column (target) >= 0, otherwise both -1.
-    std::pair<int, int> clearButtonAt (juce::Point<int> position) const noexcept;
-    void clearRow (int source);
-    void clearColumn (int target);
-    float amountAt (int source, int target) const noexcept;
-    bool setAmountAt (int source, int target, float amount);
-    juce::String targetName (int target) const;
-    static juce::Rectangle<int> rowClearButton (juce::Rectangle<int> label) noexcept;
-    static juce::Rectangle<int> columnClearButton (juce::Rectangle<int> label) noexcept;
-
-    nsynth::ModMatrix* matrix;
-    const bool direct;
-    bool updating { false };
-    std::vector<std::unique_ptr<ModAmountCell>> cells;
-    std::vector<juce::Rectangle<int>> rowLabels, columnLabels;
-    std::vector<bool> activeRows, activeColumns;
-    std::pair<int, int> hoveredClear { -1, -1 };
-};
-
-class ModMatrixPage : public juce::Component
-{
-public:
-    ModMatrixPage (nsynth::SynthEngine& engine, nsynth::Layer layer);
-    void setLayer (nsynth::Layer layer);
-    // false: the 8 matrix-only targets, true: direct mapping onto panel parameters.
-    void showDirect (bool direct);
-    void paint (juce::Graphics&) override;
-    void resized() override;
-    std::function<void()> onClose;
-
-private:
-    nsynth::SynthEngine& engine;
-    nsynth::Layer layer;
-    ModMatrixGrid matrixGrid, directGrid;
-    juce::TextButton matrixTab { "MATRIX" }, directTab { "DIRECT MAPPING" },
-                     clearAllButton { "CLEAR ALL" }, closeButton { "CLOSE" };
-    juce::Label hint, help;
-};
+#include "EditorComponents.h"
+#include "ModulationUi.h"
+#include "FxPage.h"
 
 // The 32 alternative waveforms as tiles (number, cycle, name); click selects one.
 class WaveSlotGrid : public juce::Component
@@ -193,6 +65,8 @@ private:
 };
 
 class NSynthAudioProcessorEditor : public juce::AudioProcessorEditor,
+                                   public juce::DragAndDropContainer,
+                                   public ModulationHost,
                                    private juce::Timer
 {
 public:
@@ -202,28 +76,46 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
 
+    // The layer pages: SYNTH (sound sources, filters, envelopes, voicing, macros), MOD (MSEGs and
+    // the modulation slots) and FX (the effect chain).
+    enum class Page { synth, mod, fx };
+    void showPage (Page page);
+    Page getPage() const noexcept { return page; }
+
     // Exposed for the editor tests.
     float getScale() const noexcept { return scale; }
     juce::Component& getContent() noexcept { return content; }
     static constexpr int kDesignWidth = NSynthAudioProcessor::kDesignWidth;
     static constexpr int kDesignHeight = NSynthAudioProcessor::kDesignHeight;
     void setScale (float newScale);
-    ModMatrixPage& getModMatrixPage() noexcept { return *modMatrixPage; }
-    void showModMatrixPage (bool shouldShow) { modMatrixPage->setVisible (shouldShow); }
+    ModPage& getModPage (nsynth::Layer layer) noexcept { return *layers[(size_t) nsynth::toInt (layer)].modPage; }
+    FxPage& getFxPage (nsynth::Layer layer) noexcept { return *layers[(size_t) nsynth::toInt (layer)].fxPage; }
     WaveBrowserPage& getWaveBrowserPage() noexcept { return *waveBrowserPage; }
     void showWaveBrowserPage (bool shouldShow) { waveBrowserPage->setVisible (shouldShow); }
     PresetBrowser& getPresetBrowser() noexcept { return *presetBrowser; }
     PresetDisplay& getPresetDisplay() noexcept { return presetDisplay; }
     void openPresetBrowser (nSynth::PresetKind kind);
-    // Cells shared by two controls (delay ms / division, static velocity / curve).
+    void selectBottomLayer (nsynth::Layer layer);
+    // Cells shared by two controls (delay ms / division, static velocity / curve, MSEG time / length).
     void updateSwitchedControls();
+    // Modulation rings of the shown layer's knobs.
+    void updateModulationDisplay();
+
+    // ModulationHost
+    bool canModulate (nsynth::Layer layer, int parameterIndex) const override;
+    void addModulationMenuItems (juce::PopupMenu& menu, nsynth::Layer layer, int parameterIndex) override;
+    void handleModulationMenu (int result, nsynth::Layer layer, int parameterIndex) override;
+    void dropModulationSource (nsynth::ModSource source, nsynth::Layer layer, int parameterIndex) override;
 
 private:
-    // The selected layer fills the editor; its sections are laid out in three rows following the
-    // signal flow: sources -> filter -> amp, modulators, voicing -> effects.
+    // The SYNTH page of a layer is three rows following the signal flow: sources -> filter -> amp,
+    // modulators, voicing / filter 2 / macros. MOD and FX are pages of their own.
     struct LayerUi
     {
         std::array<std::vector<std::unique_ptr<SectionPanel>>, 3> rows;
+        std::unique_ptr<ModPage> modPage;
+        std::unique_ptr<FxPage> fxPage;
+        std::vector<ParamControl*> controls;   // every control of the layer (modulation rings)
     };
 
     struct SwitchedCell
@@ -235,10 +127,11 @@ private:
 
     void timerCallback() override;
     void refreshDisplay() noexcept;
+    std::unique_ptr<ParamControl> makeControl (nsynth::Layer layer, const char* suffix);
     std::unique_ptr<SectionPanel> makeSection (nsynth::Layer layer, nsynth::Section section, int columns, juce::Colour accent);
-    void selectBottomLayer (nsynth::Layer layer);
     void configureMidiLearn (ParamControl& control);
     void layoutContent();
+    void updatePageVisibility();
     void savePresetAs (nSynth::PresetKind kind);
 
     NSynthAudioProcessor& synth;
@@ -246,10 +139,12 @@ private:
     juce::Component content;
     float scale { 1.0f };
     uint32_t lastMidiParameterDrops { 0 };
+    int timerTicks { 0 };
 
     std::array<LayerUi, 2> layers;
     std::vector<SwitchedCell> switchedCells;
     nsynth::Layer bottomLayer { nsynth::Layer::upper };
+    Page page { Page::synth };
 
     juce::Label title, voiceMeter, layerHint;
     PresetDisplay presetDisplay;
@@ -257,9 +152,8 @@ private:
     juce::TextButton upperSelect { "UPPER" }, lowerSelect { "LOWER" };
     juce::TextButton initLayer { "INIT" }, copyUpToLow { "COPY U>L" }, copyLowToUp { "COPY L>U" };
     juce::TextButton loadPatch { "LOAD PATCH" }, savePatch { "SAVE PATCH" }, comparePatch { "COMPARE" };
-    juce::TextButton modMatrixButton { "MOD MATRIX" }, waveBrowserButton { "WAVE BANK" };
+    juce::TextButton synthTab { "SYNTH" }, modTab { "MOD" }, fxTab { "FX" }, waveBrowserButton { "WAVE BANK" };
     juce::ComboBox sizeBox;
-    std::unique_ptr<ModMatrixPage> modMatrixPage;
     std::unique_ptr<WaveBrowserPage> waveBrowserPage;
     std::unique_ptr<PresetBrowser> presetBrowser;
     std::unique_ptr<SectionPanel> performancePanel;

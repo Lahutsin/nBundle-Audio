@@ -67,6 +67,8 @@ namespace rates
     // Delay division (DelayDivision index, 1/64 .. 1/1) in beats.
     double delayDivisionBeats (int index) noexcept;
 
+    // MSEG length (MsegDivision index, 1/16 .. 8 bars) in beats.
+    double msegDivisionBeats (int index) noexcept;
     int divisionIndex (float fader, int count) noexcept;
 }
 } // namespace nsynth

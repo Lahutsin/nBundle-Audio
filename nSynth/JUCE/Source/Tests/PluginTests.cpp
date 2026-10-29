@@ -291,11 +291,16 @@ public:
             expect (ed != nullptr);
             expectEquals (countControls (ed->getContent()), 2 * (int) getLayerParamSpecs().size() + (int) getPerformanceParamSpecs().size());
             expectGreaterThan (countSegmentedChoices (ed->getContent()), 0);
-            expect (! ed->getModMatrixPage().isVisible());
-            ed->showModMatrixPage (true);
-            expect (ed->getModMatrixPage().isVisible());
-            ed->getModMatrixPage().setLayer (Layer::lower);
-            ed->showModMatrixPage (false);
+            // Pages: SYNTH by default, MOD and FX per layer, only the selected layer's page shows.
+            expect (! ed->getModPage (Layer::upper).isVisible() && ! ed->getFxPage (Layer::upper).isVisible());
+            ed->showPage (NSynthAudioProcessorEditor::Page::mod);
+            expect (ed->getModPage (Layer::upper).isVisible() && ! ed->getModPage (Layer::lower).isVisible());
+            ed->selectBottomLayer (Layer::lower);
+            expect (ed->getModPage (Layer::lower).isVisible() && ! ed->getModPage (Layer::upper).isVisible());
+            ed->showPage (NSynthAudioProcessorEditor::Page::fx);
+            expect (ed->getFxPage (Layer::lower).isVisible() && ! ed->getModPage (Layer::lower).isVisible());
+            ed->selectBottomLayer (Layer::upper);
+            ed->showPage (NSynthAudioProcessorEditor::Page::synth);
             expect (! ed->getWaveBrowserPage().isVisible());
             ed->showWaveBrowserPage (true);
             expect (ed->getWaveBrowserPage().isVisible());

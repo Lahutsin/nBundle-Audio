@@ -437,7 +437,7 @@ bool NSynthAudioProcessor::isPatchDirty (Layer layer) const
             return true;
     const auto& currentMatrix = *engine.modMatrix (layer).snapshot();
     const auto& baselineMatrix = patchMatrixBaseline[(size_t) toInt (layer)];
-    if (currentMatrix.fixed != baselineMatrix.fixed || currentMatrix.direct != baselineMatrix.direct)
+    if (! currentMatrix.sameContent (baselineMatrix))
         return true;
     return ! sameUserWaveState (engine.getWaveBank().toValueTree(), patchWaveBaseline[(size_t) toInt (layer)]);
 }

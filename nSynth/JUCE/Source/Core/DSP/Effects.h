@@ -65,6 +65,7 @@ public:
         bool freeze { false };
         float lowCutHz { 20.0f };
         float highCutHz { 20000.0f };
+        float duck { 0.0f };       // 0..1: the echoes dip while the dry signal plays
     };
 
     void prepare (double sampleRate, int maxBlock);
@@ -78,6 +79,7 @@ private:
     double currentDelaySamples { -1.0 };
     float smoothedMix { -1.0f };
     float lowState[2] {}, highState[2] {};
+    float duckEnvelope { 0.0f };
 };
 
 // Algorithmic stereo reverb: pre-delay, input diffusion and an 8-line feedback delay
@@ -87,6 +89,7 @@ class StereoReverb
 public:
     static constexpr int kLines = 8;
     static constexpr int kDiffusers = 4;
+    static constexpr double kMinPreDelayMs = 0.1;
     static constexpr double kMaxPreDelayMs = 260.0;
 
     struct Settings
@@ -99,6 +102,7 @@ public:
         float lowCutHz { 150.0f };
         float width { 1.0f };
         float modulation { 0.3f };     // 0..1
+        float duck { 0.0f };           // 0..1: the tail dips while the dry signal plays
     };
 
     void prepare (double sampleRate, int maxBlock);
@@ -139,6 +143,114 @@ private:
     float lowCutState[2] {};
     int modCounter { 0 };
     float smoothedMix { -1.0f }, smoothedSize { -1.0f }, smoothedPreDelay { -1.0f };
+    float duckEnvelope { 0.0f };
+};
+
+// Envelope follower shared by the ducking delay / reverb: fast attack, ~250 ms release.
+// Returns the wet gain for the current dry sample (1 = no ducking).
+float duckGain (float& envelope, float dryL, float dryR, float duck, double sampleRate) noexcept;
+
+// Distortion with first-order anti-derivative anti-aliasing for the Soft, Hard and Fold curves.
+class Distortion
+{
+public:
+    struct Settings
+    {
+        DistortionType type { DistortionType::soft };
+        float drive { 0.3f };   // 0..1 = 0..36 dB
+        float tone { 0.7f };    // post low-pass 800 Hz .. 20 kHz
+        float mix { 1.0f };
+    };
+    void prepare (double sampleRate);
+    void reset();
+    void process (juce::AudioBuffer<float>& buffer, int start, int num, const Settings& settings) noexcept;
+
+private:
+    double sr { 44100.0 };
+    float lastInput[2] {}, toneState[2] {}, dcIn[2] {}, dcOut[2] {}, held[2] {};
+    int holdCounter { 0 };
+};
+
+// Low shelf, peak and high shelf (RBJ biquads); coefficients follow the settings per block.
+class ThreeBandEq
+{
+public:
+    struct Settings
+    {
+        float lowHz { 150.0f }, lowDb { 0.0f };
+        float midHz { 1000.0f }, midDb { 0.0f }, midQ { 0.7f };
+        float highHz { 6000.0f }, highDb { 0.0f };
+    };
+    void prepare (double sampleRate);
+    void reset();
+    void process (juce::AudioBuffer<float>& buffer, int start, int num, const Settings& settings) noexcept;
+    // Magnitude response in dB (editor curve and tests).
+    static float responseDb (const Settings& settings, double hz, double sampleRate) noexcept;
+
+private:
+    struct Biquad
+    {
+        float b0 { 1.0f }, b1 { 0.0f }, b2 { 0.0f }, a1 { 0.0f }, a2 { 0.0f };
+        float z1[2] {}, z2[2] {};
+    };
+    static Biquad design (int band, const Settings& s, double sampleRate) noexcept;
+    double sr { 44100.0 };
+    std::array<Biquad, 3> bands;
+    Settings last;
+    bool designed { false };
+};
+
+// Feed-forward stereo-linked compressor with a 6 dB soft knee. The detector listens to the
+// layer itself or to a key signal (the other layer: sidechain ducking).
+class Compressor
+{
+public:
+    struct Settings
+    {
+        float thresholdDb { -18.0f }, ratio { 4.0f }, attackMs { 5.0f }, releaseMs { 120.0f }, makeupDb { 0.0f }, mix { 1.0f };
+    };
+    void prepare (double sampleRate);
+    void reset();
+    void process (juce::AudioBuffer<float>& buffer, int start, int num, const Settings& settings,
+                  const juce::AudioBuffer<float>* key) noexcept;
+    float getGainReductionDb() const noexcept { return reductionDb; }
+    static float staticCurveDb (float inputDb, const Settings& settings) noexcept;   // gain change in dB
+
+private:
+    double sr { 44100.0 };
+    float reductionDb { 0.0f };
+};
+
+// Six-stage stereo phaser (first-order all-passes, swept 200 Hz .. ~4 kHz) with feedback.
+class Phaser
+{
+public:
+    struct Settings { float rateHz { 0.4f }, depth { 0.6f }, feedback { 0.4f }, mix { 0.5f }; };
+    void prepare (double sampleRate);
+    void reset();
+    void process (juce::AudioBuffer<float>& buffer, int start, int num, const Settings& settings) noexcept;
+
+private:
+    static constexpr int kStages = 6;
+    double sr { 44100.0 }, phase { 0.0 };
+    float state[2][kStages] {}, feedbackState[2] {}, coef[2] {};
+    int coefCounter { 0 };
+};
+
+// Stereo flanger: 0.3 .. 5.3 ms modulated delay with bipolar feedback.
+class Flanger
+{
+public:
+    struct Settings { float rateHz { 0.25f }, depth { 0.6f }, feedback { 0.5f }, mix { 0.5f }; };
+    void prepare (double sampleRate, int maxBlock);
+    void reset();
+    void process (juce::AudioBuffer<float>& buffer, int start, int num, const Settings& settings) noexcept;
+
+private:
+    double sr { 44100.0 }, phase { 0.0 };
+    juce::AudioBuffer<float> line;
+    int writePos { 0 };
+    float feedbackState[2] {};
 };
 
 // Stereo-linked safety limiter for the main output. Transparent below the ceiling; above it the

@@ -1,4 +1,5 @@
 #include "Effects.h"
+#include <complex>
 
 namespace nsynth
 {
@@ -164,6 +165,7 @@ void StereoDelay::reset()
     currentDelaySamples = -1.0;
     smoothedMix = -1.0f; // initialised to the first target
     lowState[0] = lowState[1] = highState[0] = highState[1] = 0.0f;
+    duckEnvelope = 0.0f;
 }
 
 void StereoDelay::process (juce::AudioBuffer<float>& buffer, int start, int num, const Settings& s) noexcept
@@ -229,7 +231,8 @@ void StereoDelay::process (juce::AudioBuffer<float>& buffer, int start, int num,
             line.setSample (1, writePos, dryR * inputGain + fb * delayed[1]);
         }
 
-        const float dryGain = dryGainForMix (smoothedMix), wetGain = wetGainForMix (smoothedMix);
+        const float dryGain = dryGainForMix (smoothedMix);
+        const float wetGain = wetGainForMix (smoothedMix) * (s.duck > 0.0f ? duckGain (duckEnvelope, dryL, dryR, s.duck, sr) : 1.0f);
         buffer.setSample (0, i, dryL * dryGain + delayed[0] * wetGain);
         buffer.setSample (1, i, dryR * dryGain + delayed[1] * wetGain);
         writePos = (writePos + 1) % size;
@@ -286,6 +289,7 @@ void StereoReverb::reset()
     lowCutState[0] = lowCutState[1] = 0.0f;
     modCounter = 0;
     smoothedMix = smoothedSize = smoothedPreDelay = -1.0f;
+    duckEnvelope = 0.0f;
     idle = true;
 }
 
@@ -314,7 +318,7 @@ void StereoReverb::process (juce::AudioBuffer<float>& buffer, int start, int num
     idle = false;
 
     const float sizeTarget = juce::jlimit (0.0f, 1.0f, s.size);
-    const float preDelayTarget = (float) (juce::jlimit (0.0, kMaxPreDelayMs - 5.0, (double) s.preDelayMs) * 0.001 * sr);
+    const float preDelayTarget = (float) (juce::jlimit (kMinPreDelayMs, kMaxPreDelayMs - 5.0, (double) s.preDelayMs) * 0.001 * sr);
     if (smoothedMix < 0.0f)
     {
         smoothedMix = mixTarget;
@@ -416,7 +420,8 @@ void StereoReverb::process (juce::AudioBuffer<float>& buffer, int start, int num
         wetL = mid + side;
         wetR = mid - side;
 
-        const float dryGain = dryGainForMix (smoothedMix), wetGain = wetGainForMix (smoothedMix);
+        const float dryGain = dryGainForMix (smoothedMix);
+        const float wetGain = wetGainForMix (smoothedMix) * (s.duck > 0.0f ? duckGain (duckEnvelope, dryL, dryR, s.duck, sr) : 1.0f);
         buffer.setSample (0, i, dryL * dryGain + wetL * wetGain);
         buffer.setSample (1, i, dryR * dryGain + wetR * wetGain);
     }
@@ -483,6 +488,381 @@ void AirShelf::process (juce::AudioBuffer<float>& buffer, int start, int num) no
         }
         z1[ch] = flushDenormal (s1);
         z2[ch] = flushDenormal (s2);
+    }
+}
+
+//==============================================================================
+float duckGain (float& envelope, float dryL, float dryR, float duck, double sampleRate) noexcept
+{
+    const float level = juce::jmax (std::abs (dryL), std::abs (dryR));
+    const float attack = (float) (1.0 - std::exp (-1.0 / (0.002 * sampleRate)));
+    const float release = (float) (1.0 - std::exp (-1.0 / (0.25 * sampleRate)));
+    envelope += (level - envelope) * (level > envelope ? attack : release);
+    envelope = flushDenormal (envelope);
+    // Full ducking from about -12 dBFS of dry signal.
+    return 1.0f - juce::jlimit (0.0f, 1.0f, duck) * juce::jmin (1.0f, envelope * 4.0f);
+}
+
+//==============================================================================
+namespace
+{
+// Anti-derivatives of the shaping curves (first-order ADAA).
+float logCosh (float x) noexcept
+{
+    const float a = std::abs (x);
+    return a + std::log1p (std::exp (-2.0f * a)) - 0.69314718f;
+}
+
+float hardClipIntegral (float x) noexcept
+{
+    const float a = std::abs (x);
+    return a <= 1.0f ? 0.5f * x * x : a - 0.5f;
+}
+
+constexpr float kFoldScale = juce::MathConstants<float>::halfPi;
+
+float foldIntegral (float x) noexcept
+{
+    return -std::cos (kFoldScale * x) / kFoldScale;
+}
+
+template <typename Curve, typename Integral>
+float antiAliased (float x, float& previous, Curve curve, Integral integral) noexcept
+{
+    const float dx = x - previous;
+    const float y = std::abs (dx) > 1.0e-4f ? (integral (x) - integral (previous)) / dx
+                                             : curve (0.5f * (x + previous));
+    previous = x;
+    return y;
+}
+} // namespace
+
+void Distortion::prepare (double sampleRate)
+{
+    sr = sampleRate;
+    reset();
+}
+
+void Distortion::reset()
+{
+    for (int ch = 0; ch < 2; ++ch)
+        lastInput[ch] = toneState[ch] = dcIn[ch] = dcOut[ch] = held[ch] = 0.0f;
+    holdCounter = 0;
+}
+
+void Distortion::process (juce::AudioBuffer<float>& buffer, int start, int num, const Settings& s) noexcept
+{
+    const float drive = juce::jlimit (0.0f, 1.0f, s.drive);
+    const float gain = juce::Decibels::decibelsToGain (36.0f * drive);
+    const float makeup = 1.0f / (1.0f + 1.5f * drive);
+    const float mix = juce::jlimit (0.0f, 1.0f, s.mix);
+    const float toneG = onePoleCoefficient (800.0f * std::exp2 (4.6f * juce::jlimit (0.0f, 1.0f, s.tone)), sr);
+    const float dcR = 1.0f - (float) (juce::MathConstants<double>::twoPi * 10.0 / sr);
+    // CRUSH: 16 -> 3 bits and a sample-and-hold of up to 32 samples.
+    const float steps = std::exp2 (15.0f - 13.0f * drive);
+    const int holdLength = 1 + (int) std::lround (31.0f * drive * drive);
+
+    for (int i = start; i < start + num; ++i)
+    {
+        const bool sampleNow = --holdCounter <= 0;
+        if (sampleNow)
+            holdCounter = holdLength;
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            const float dry = buffer.getSample (ch, i);
+            float y = 0.0f;
+            switch (s.type)
+            {
+                case DistortionType::soft:
+                    y = antiAliased (dry * gain, lastInput[ch], [] (float v) { return std::tanh (v); }, logCosh);
+                    break;
+                case DistortionType::hard:
+                    y = antiAliased (dry * gain, lastInput[ch], [] (float v) { return juce::jlimit (-1.0f, 1.0f, v); }, hardClipIntegral);
+                    break;
+                case DistortionType::fold:
+                    y = antiAliased (dry * (1.0f + 0.25f * (gain - 1.0f)), lastInput[ch],
+                                     [] (float v) { return std::sin (kFoldScale * v); }, foldIntegral);
+                    break;
+                case DistortionType::tube:
+                {
+                    // Biased (asymmetric, even harmonics) tanh, DC removed afterwards.
+                    const float v = std::tanh (dry * gain + 0.35f) - 0.33637554f;
+                    dcOut[ch] = v - dcIn[ch] + dcR * dcOut[ch];
+                    dcIn[ch] = v;
+                    y = dcOut[ch] = flushDenormal (dcOut[ch]);
+                    break;
+                }
+                case DistortionType::crush:
+                    if (sampleNow)
+                        held[ch] = std::round (juce::jlimit (-1.0f, 1.0f, dry * (1.0f + drive)) * steps) / steps;
+                    y = held[ch];
+                    break;
+            }
+            if (s.type != DistortionType::crush)
+                y *= makeup;
+            y = onePoleLowpass (y, toneState[ch], toneG);
+            toneState[ch] = flushDenormal (toneState[ch]);
+            buffer.setSample (ch, i, dry + (y - dry) * mix);
+        }
+    }
+}
+
+//==============================================================================
+void ThreeBandEq::prepare (double sampleRate)
+{
+    sr = sampleRate;
+    designed = false;
+    reset();
+}
+
+void ThreeBandEq::reset()
+{
+    for (auto& b : bands)
+        b.z1[0] = b.z1[1] = b.z2[0] = b.z2[1] = 0.0f;
+}
+
+ThreeBandEq::Biquad ThreeBandEq::design (int band, const Settings& s, double sampleRate) noexcept
+{
+    // RBJ cookbook; shelves with slope S = 1.
+    const double hz = band == 0 ? s.lowHz : band == 1 ? s.midHz : s.highHz;
+    const double db = band == 0 ? s.lowDb : band == 1 ? s.midDb : s.highDb;
+    const double w0 = juce::MathConstants<double>::twoPi * juce::jlimit (10.0, 0.45 * sampleRate, hz) / sampleRate;
+    const double A = std::pow (10.0, db / 40.0);
+    const double cosw = std::cos (w0), sinw = std::sin (w0);
+    double b0, b1, b2, a0, a1, a2;
+    if (band == 1)
+    {
+        const double alpha = sinw / (2.0 * juce::jmax (0.1, (double) s.midQ));
+        b0 = 1.0 + alpha * A; b1 = -2.0 * cosw; b2 = 1.0 - alpha * A;
+        a0 = 1.0 + alpha / A; a1 = -2.0 * cosw; a2 = 1.0 - alpha / A;
+    }
+    else
+    {
+        const double alpha = sinw / 2.0 * std::sqrt (2.0);
+        const double k = 2.0 * std::sqrt (A) * alpha;
+        const double sign = band == 0 ? -1.0 : 1.0;   // low shelf / high shelf
+        b0 = A * ((A + 1.0) + sign * (A - 1.0) * cosw + k);
+        b1 = -2.0 * sign * A * ((A - 1.0) + sign * (A + 1.0) * cosw);
+        b2 = A * ((A + 1.0) + sign * (A - 1.0) * cosw - k);
+        a0 = (A + 1.0) - sign * (A - 1.0) * cosw + k;
+        a1 = 2.0 * sign * ((A - 1.0) - sign * (A + 1.0) * cosw);
+        a2 = (A + 1.0) - sign * (A - 1.0) * cosw - k;
+    }
+    Biquad q;
+    q.b0 = (float) (b0 / a0); q.b1 = (float) (b1 / a0); q.b2 = (float) (b2 / a0);
+    q.a1 = (float) (a1 / a0); q.a2 = (float) (a2 / a0);
+    return q;
+}
+
+float ThreeBandEq::responseDb (const Settings& s, double hz, double sampleRate) noexcept
+{
+    const double w = juce::MathConstants<double>::twoPi * hz / sampleRate;
+    const std::complex<double> z1 = std::polar (1.0, -w), z2 = std::polar (1.0, -2.0 * w);
+    double db = 0.0;
+    for (int band = 0; band < 3; ++band)
+    {
+        const auto q = design (band, s, sampleRate);
+        const auto h = ((double) q.b0 + (double) q.b1 * z1 + (double) q.b2 * z2) / (1.0 + (double) q.a1 * z1 + (double) q.a2 * z2);
+        db += 20.0 * std::log10 (juce::jmax (1.0e-9, std::abs (h)));
+    }
+    return (float) db;
+}
+
+void ThreeBandEq::process (juce::AudioBuffer<float>& buffer, int start, int num, const Settings& s) noexcept
+{
+    const auto same = [] (float a, float b) { return juce::exactlyEqual (a, b); };
+    const bool changed = ! designed || ! same (s.lowHz, last.lowHz) || ! same (s.lowDb, last.lowDb) || ! same (s.midHz, last.midHz)
+                      || ! same (s.midDb, last.midDb) || ! same (s.midQ, last.midQ) || ! same (s.highHz, last.highHz)
+                      || ! same (s.highDb, last.highDb);
+    if (changed)
+    {
+        for (int band = 0; band < 3; ++band)
+        {
+            const auto q = design (band, s, sr);
+            auto& b = bands[(size_t) band];
+            b.b0 = q.b0; b.b1 = q.b1; b.b2 = q.b2; b.a1 = q.a1; b.a2 = q.a2;
+        }
+        last = s;
+        designed = true;
+    }
+    for (auto& b : bands)
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            float* d = buffer.getWritePointer (ch);
+            float s1 = b.z1[ch], s2 = b.z2[ch];
+            for (int i = start; i < start + num; ++i)
+            {
+                const float x = d[i];
+                const float y = b.b0 * x + s1;
+                s1 = b.b1 * x - b.a1 * y + s2;
+                s2 = b.b2 * x - b.a2 * y;
+                d[i] = y;
+            }
+            b.z1[ch] = flushDenormal (s1);
+            b.z2[ch] = flushDenormal (s2);
+        }
+}
+
+//==============================================================================
+void Compressor::prepare (double sampleRate)
+{
+    sr = sampleRate;
+    reset();
+}
+
+void Compressor::reset()
+{
+    reductionDb = 0.0f;
+}
+
+float Compressor::staticCurveDb (float inputDb, const Settings& s) noexcept
+{
+    constexpr float knee = 6.0f;
+    const float over = inputDb - s.thresholdDb;
+    const float slope = 1.0f / juce::jmax (1.0f, s.ratio) - 1.0f;
+    if (over <= -0.5f * knee)
+        return 0.0f;
+    if (over >= 0.5f * knee)
+        return slope * over;
+    const float x = over + 0.5f * knee;
+    return slope * x * x / (2.0f * knee);
+}
+
+void Compressor::process (juce::AudioBuffer<float>& buffer, int start, int num, const Settings& s,
+                          const juce::AudioBuffer<float>* key) noexcept
+{
+    const float attack = (float) (1.0 - std::exp (-1.0 / (juce::jmax (0.05, (double) s.attackMs) * 0.001 * sr)));
+    const float release = (float) (1.0 - std::exp (-1.0 / (juce::jmax (1.0, (double) s.releaseMs) * 0.001 * sr)));
+    const float makeup = juce::Decibels::decibelsToGain (s.makeupDb);
+    const float mix = juce::jlimit (0.0f, 1.0f, s.mix);
+    const auto& detector = key != nullptr ? *key : buffer;
+
+    for (int i = start; i < start + num; ++i)
+    {
+        const float level = juce::jmax (std::abs (detector.getSample (0, i)), std::abs (detector.getSample (1, i)));
+        const float targetDb = staticCurveDb (juce::Decibels::gainToDecibels (level, -120.0f), s);   // <= 0
+        // More reduction = attack, less = release.
+        reductionDb += (targetDb - reductionDb) * (targetDb < reductionDb ? attack : release);
+        reductionDb = flushDenormal (reductionDb);
+        const float gain = juce::Decibels::decibelsToGain (reductionDb) * makeup;
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            const float dry = buffer.getSample (ch, i);
+            buffer.setSample (ch, i, dry + (dry * gain - dry) * mix);
+        }
+    }
+}
+
+//==============================================================================
+void Phaser::prepare (double sampleRate)
+{
+    sr = sampleRate;
+    reset();
+}
+
+void Phaser::reset()
+{
+    for (int ch = 0; ch < 2; ++ch)
+    {
+        for (auto& v : state[ch])
+            v = 0.0f;
+        feedbackState[ch] = 0.0f;
+        coef[ch] = 0.0f;
+    }
+    coefCounter = 0;
+}
+
+void Phaser::process (juce::AudioBuffer<float>& buffer, int start, int num, const Settings& s) noexcept
+{
+    const double increment = (double) juce::jlimit (0.01f, 20.0f, s.rateHz) / sr;
+    const float depth = juce::jlimit (0.0f, 1.0f, s.depth);
+    const float feedback = juce::jlimit (-0.95f, 0.95f, s.feedback);
+    const float mix = juce::jlimit (0.0f, 1.0f, s.mix);
+    constexpr int kCoefInterval = 16;
+
+    for (int i = start; i < start + num; ++i)
+    {
+        if (--coefCounter <= 0)
+        {
+            coefCounter = kCoefInterval;
+            for (int ch = 0; ch < 2; ++ch)
+            {
+                // Right channel a quarter cycle later; exponential sweep 200 Hz .. 200 Hz x 2^(4.3 x depth).
+                const double lfo = 0.5 + 0.5 * std::sin (juce::MathConstants<double>::twoPi * (phase + 0.25 * ch));
+                const double hz = juce::jmin (0.45 * sr, 200.0 * std::exp2 (4.3 * depth * lfo));
+                const double t = std::tan (juce::MathConstants<double>::pi * hz / sr);
+                coef[ch] = (float) ((t - 1.0) / (t + 1.0));
+            }
+        }
+        phase += increment;
+        phase -= std::floor (phase);
+
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            const float dry = buffer.getSample (ch, i);
+            float x = dry + feedback * feedbackState[ch];
+            for (int k = 0; k < kStages; ++k)
+            {
+                const float y = coef[ch] * x + state[ch][k];
+                state[ch][k] = flushDenormal (x - coef[ch] * y);
+                x = y;
+            }
+            feedbackState[ch] = flushDenormal (x);
+            // MIX 50 %: dry + all-passed in equal parts, the deepest notches.
+            buffer.setSample (ch, i, dry * (1.0f - mix) + x * mix);
+        }
+    }
+}
+
+//==============================================================================
+void Flanger::prepare (double sampleRate, int)
+{
+    sr = sampleRate;
+    line.setSize (2, (int) std::ceil (sr * 0.008) + 4);
+    reset();
+}
+
+void Flanger::reset()
+{
+    line.clear();
+    writePos = 0;
+    phase = 0.0;
+    feedbackState[0] = feedbackState[1] = 0.0f;
+}
+
+void Flanger::process (juce::AudioBuffer<float>& buffer, int start, int num, const Settings& s) noexcept
+{
+    const double increment = (double) juce::jlimit (0.01f, 20.0f, s.rateHz) / sr;
+    const double minDelay = 0.0003 * sr;
+    const double sweep = 0.005 * sr * (double) juce::jlimit (0.0f, 1.0f, s.depth);
+    const float feedback = juce::jlimit (-0.95f, 0.95f, s.feedback);
+    const float mix = juce::jlimit (0.0f, 1.0f, s.mix);
+    const int size = line.getNumSamples();
+
+    for (int i = start; i < start + num; ++i)
+    {
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            double p = phase + 0.25 * ch;
+            p -= std::floor (p);
+            const double tri = p < 0.5 ? 2.0 * p : 2.0 - 2.0 * p;   // linear sweep sounds most "jet"-like
+            double readPos = (double) writePos - (minDelay + sweep * tri);
+            if (readPos < 0.0)
+                readPos += size;
+            const int i0 = (int) readPos;
+            const int i1 = i0 + 1 < size ? i0 + 1 : 0;
+            const float frac = (float) (readPos - i0);
+            const float* d = line.getReadPointer (ch);
+            const float wet = d[i0] + (d[i1] - d[i0]) * frac;
+
+            const float dry = buffer.getSample (ch, i);
+            line.setSample (ch, writePos, dry + feedback * feedbackState[ch]);
+            feedbackState[ch] = flushDenormal (wet);
+            buffer.setSample (ch, i, dry * (1.0f - mix) + wet * mix);
+        }
+        writePos = writePos + 1 < size ? writePos + 1 : 0;
+        phase += increment;
+        phase -= std::floor (phase);
     }
 }
 } // namespace nsynth

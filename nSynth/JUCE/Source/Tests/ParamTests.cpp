@@ -11,7 +11,8 @@ public:
     void runTest() override
     {
         beginTest ("registry sizes are the documented ones");
-        expectEquals ((int) getLayerParamSpecs().size(), 100);
+        expectEquals ((int) getLayerParamSpecs().size(), 160);
+        expectEquals ((int) getLayerParamSpecs().size(), (int) kLayerParamCount);
         expectEquals ((int) getPerformanceParamSpecs().size(), 15);
 
         beginTest ("suffixes unique, every spec exists for both layers + performance in the APVTS");
@@ -28,7 +29,16 @@ public:
             }
             for (auto& spec : getPerformanceParamSpecs())
                 expect (s.getParameter (perfParamId (spec.suffix)) != nullptr, spec.suffix);
-            expectEquals (proc.getParameters().size(), 2 * 100 + 15);
+            expectEquals (proc.getParameters().size(), 2 * 160 + 15);
+
+            // Version 2 parameters follow every version 1 parameter (host parameter order).
+            bool seenV2 = false;
+            for (auto& spec : getLayerParamSpecs())
+            {
+                expect (! (seenV2 && spec.version == 1), spec.suffix);
+                seenV2 |= spec.version == 2;
+            }
+            expectEquals (findLayerSpecIndex (pid::macro1), 100);
         }
 
         beginTest ("choice lists match the DSP enums");
@@ -54,6 +64,34 @@ public:
         expectEquals (choices (pid::delayDivision), toInt (DelayDivision::d1_1) + 1);
         expectEquals (findLayerSpec (pid::delayDivision)->choices[toInt (DelayDivision::d1_4)], juce::String ("1/4"));
         expectEquals (findLayerSpec (pid::delayDivision)->choices[toInt (DelayDivision::d1_8D)], juce::String ("1/8 D"));
+
+        expectEquals (choices (pid::mseg1Mode), toInt (MsegMode::free) + 1);
+        expectEquals (choices (pid::mseg1Division), toInt (MsegDivision::bar8) + 1);
+        expectEquals (choices (pid::filter2Routing), toInt (Filter2Routing::parallel) + 1);
+        expectEquals (choices (pid::filter2Type), toInt (Filter2Type::formant) + 1);
+        expectEquals (choices (pid::filter2EnvSource), toInt (EnvSource::env2) + 1);
+        expectEquals (choices (pid::distType), toInt (DistortionType::crush) + 1);
+        expectEquals (choices (pid::compKey), toInt (CompressorKey::otherLayer) + 1);
+
+        beginTest ("every continuous layer parameter has a snapshot field the matrix can modulate");
+        {
+            NSynthAudioProcessor proc;
+            const auto& specs = getLayerParamSpecs();
+            for (int i = 0; i < (int) specs.size(); ++i)
+            {
+                const auto& spec = specs[(size_t) i];
+                LayerSnapshot snapshot;
+                expect ((snapshot.floatField (i) != nullptr) == (spec.kind == Kind::floatParam), spec.suffix);
+                if (snapshot.floatField (i) == nullptr)
+                    continue;
+                // The reader fills exactly this field from the parameter.
+                const float value = spec.minValue + 0.37f * (spec.maxValue - spec.minValue);
+                test::setParam (proc.getState(), layerParamId (Layer::lower, spec.suffix), value);
+                LayerParamReader reader (proc.getState(), Layer::lower);
+                reader.read (snapshot);
+                expectWithinAbsoluteError (*snapshot.floatField (i), value, 1.0e-3f * juce::jmax (1.0f, std::abs (value)), spec.suffix);
+            }
+        }
 
         beginTest ("sequencer, arpeggiator and oversampling selection are gone");
         for (auto* removed : { "arp_on", "arp_mode", "arp_range", "clk_div", "swing", "seq_slot", "delay_send", "delay_time" })

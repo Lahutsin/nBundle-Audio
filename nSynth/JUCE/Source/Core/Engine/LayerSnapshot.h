@@ -5,6 +5,8 @@
 
 namespace nsynth
 {
+inline constexpr size_t kLayerParamCount = 160;
+
 // Plain-value copy of one layer's parameters, refreshed once per audio block.
 struct LayerSnapshot
 {
@@ -81,6 +83,41 @@ struct LayerSnapshot
     // Reverb
     float reverbMix { 0.0f }, reverbSize { 0.6f }, reverbDecay { 2.5f }, reverbPreDelayMs { 15.0f },
           reverbDampingHz { 9000.0f }, reverbLowCutHz { 150.0f }, reverbWidth { 1.0f }, reverbModulation { 0.3f };
+
+    // ---- version 2 -----------------------------------------------------------------------
+    std::array<float, 8> macros {};
+    std::array<MsegMode, 2> msegMode { MsegMode::envelope, MsegMode::loop };
+    std::array<bool, 2> msegSync { false, true };
+    std::array<float, 2> msegTime { 1.0f, 1.0f };
+    std::array<MsegDivision, 2> msegDivision { MsegDivision::bar1, MsegDivision::bar1 };
+    Filter2Routing f2Routing { Filter2Routing::off };
+    Filter2Type f2Type { Filter2Type::lp12 };
+    float f2Cutoff { 2000.0f }, f2Res { 0.2f }, f2Env { 0.0f };
+    EnvSource f2EnvSource { EnvSource::env2 };
+    float f2Keytrack { 0.0f }, f2Drive { 0.0f }, f2Mix { 1.0f };
+    bool delayOn { true };
+    float delayDuck { 0.0f };
+    bool reverbOn { true };
+    float reverbDuck { 0.0f };
+    bool distOn { false };
+    DistortionType distType { DistortionType::soft };
+    float distDrive { 0.3f }, distTone { 0.7f }, distMix { 1.0f };
+    bool eqOn { false };
+    float eqLowFreq { 150.0f }, eqLowGain { 0.0f }, eqMidFreq { 1000.0f }, eqMidGain { 0.0f }, eqMidQ { 0.7f },
+          eqHighFreq { 6000.0f }, eqHighGain { 0.0f };
+    bool compOn { false };
+    float compThreshold { -18.0f }, compRatio { 4.0f }, compAttackMs { 5.0f }, compReleaseMs { 120.0f }, compMakeup { 0.0f };
+    CompressorKey compKey { CompressorKey::self };
+    float compMix { 1.0f };
+    bool phaserOn { false };
+    float phaserRate { 0.4f }, phaserDepth { 0.6f }, phaserFeedback { 0.4f }, phaserMix { 0.5f };
+    bool flangerOn { false };
+    float flangerRate { 0.25f }, flangerDepth { 0.6f }, flangerFeedback { 0.5f }, flangerMix { 0.5f };
+
+    // The float field holding continuous layer parameter `specIndex` (getLayerParamSpecs() order),
+    // nullptr for choice, int and bool parameters. Used to apply modulation to any parameter.
+    float* floatField (int specIndex) noexcept;
+    const float* floatField (int specIndex) const noexcept { return const_cast<LayerSnapshot*> (this)->floatField (specIndex); }
 };
 
 struct PerformanceSnapshot
@@ -111,7 +148,7 @@ private:
     {
         return values[index]->load (std::memory_order_relaxed);
     }
-    std::array<std::atomic<float>*, 100> values {};
+    std::array<std::atomic<float>*, kLayerParamCount> values {};
 };
 
 class PerformanceParamReader

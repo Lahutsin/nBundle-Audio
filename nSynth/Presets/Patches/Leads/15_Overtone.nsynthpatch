@@ -98,7 +98,7 @@
   <PARAM id="up_reverb_mix" value="0.1800000071525574"/>
   <PARAM id="up_reverb_size" value="0.550000011920929"/>
   <PARAM id="up_reverb_decay" value="0.5"/>
-  <PARAM id="up_reverb_predelay" value="0.3369663953781128"/>
+  <PARAM id="up_reverb_predelay" value="0.3366622626781464"/>
   <PARAM id="up_reverb_damp" value="0.6941346526145935"/>
   <PARAM id="up_reverb_lowcut" value="0.5616593360900879"/>
   <PARAM id="up_reverb_width" value="0.8500000238418579"/>

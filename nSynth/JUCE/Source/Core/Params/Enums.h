@@ -42,6 +42,16 @@ enum class DelayDivision
     d1_4T, d1_8D, d1_4, d1_2T, d1_4D, d1_2, d1_2D, d1_1
 };
 
+// MSEG: one-shot envelope, retriggered loop, or free-running loop on the layer clock.
+enum class MsegMode { envelope = 0, loop, free };
+enum class MsegDivision { d1_16 = 0, d1_8, d1_4, d1_2, bar1, bar2, bar4, bar8 };
+enum class Filter2Routing { off = 0, serial, parallel };
+enum class Filter2Type { lp12 = 0, lp24, hp12, hp24, bandpass, notch, combPlus, combMinus, formant };
+enum class DistortionType { soft = 0, hard, tube, fold, crush };
+enum class CompressorKey { self = 0, otherLayer };
+// Layer effect modules; their processing order is patch data (see ModMatrixData::fxOrder).
+enum class FxModule { distortion = 0, eq, compressor, chorus, phaser, flanger, delay, reverb, count };
+
 enum class KeyboardMode { single = 0, dual, split };
 enum class MidiRouting { keyboardMode = 0, channelPerLayer };
 

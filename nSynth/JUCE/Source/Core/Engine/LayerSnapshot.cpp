@@ -132,7 +132,146 @@ void LayerParamReader::read (LayerSnapshot& o) const noexcept
     o.reverbLowCutHz = f();
     o.reverbWidth = f();
     o.reverbModulation = f();
+
+    for (auto& macro : o.macros)
+        macro = f();
+    for (size_t m = 0; m < 2; ++m)
+    {
+        o.msegMode[m] = (MsegMode) e();
+        o.msegSync[m] = b();
+        o.msegTime[m] = f();
+        o.msegDivision[m] = (MsegDivision) e();
+    }
+    o.f2Routing = (Filter2Routing) e();
+    o.f2Type = (Filter2Type) e();
+    o.f2Cutoff = f();
+    o.f2Res = f();
+    o.f2Env = f();
+    o.f2EnvSource = (EnvSource) e();
+    o.f2Keytrack = f();
+    o.f2Drive = f();
+    o.f2Mix = f();
+
+    o.delayOn = b();
+    o.delayDuck = f();
+    o.reverbOn = b();
+    o.reverbDuck = f();
+
+    o.distOn = b();
+    o.distType = (DistortionType) e();
+    o.distDrive = f();
+    o.distTone = f();
+    o.distMix = f();
+
+    o.eqOn = b();
+    o.eqLowFreq = f();
+    o.eqLowGain = f();
+    o.eqMidFreq = f();
+    o.eqMidGain = f();
+    o.eqMidQ = f();
+    o.eqHighFreq = f();
+    o.eqHighGain = f();
+
+    o.compOn = b();
+    o.compThreshold = f();
+    o.compRatio = f();
+    o.compAttackMs = f();
+    o.compReleaseMs = f();
+    o.compMakeup = f();
+    o.compKey = (CompressorKey) e();
+    o.compMix = f();
+
+    o.phaserOn = b();
+    o.phaserRate = f();
+    o.phaserDepth = f();
+    o.phaserFeedback = f();
+    o.phaserMix = f();
+
+    o.flangerOn = b();
+    o.flangerRate = f();
+    o.flangerDepth = f();
+    o.flangerFeedback = f();
+    o.flangerMix = f();
     jassert (idx == values.size());
+}
+
+float* LayerSnapshot::floatField (int specIndex) noexcept
+{
+    // Byte offsets of the float fields, in getLayerParamSpecs() order (-1: not a float field).
+    // Built once by matching the parameter suffixes; ParamTests checks every float parameter.
+    static const auto offsets = []
+    {
+        std::array<int, kLayerParamCount> table;
+        table.fill (-1);
+        using S = LayerSnapshot;
+        const std::pair<const char*, size_t> fields[] = {
+            { pid::dds2Tune, offsetof (S, dds2Tune) }, { pid::mix, offsetof (S, mix) }, { pid::pan, offsetof (S, pan) },
+            { pid::modLfo1, offsetof (S, modLfo1) }, { pid::modEnv1, offsetof (S, modEnv1) },
+            { pid::pwDetune, offsetof (S, pwDetune) }, { pid::pwmWave, offsetof (S, pwmWave) },
+            { pid::crossMod, offsetof (S, crossMod) }, { pid::drift, offsetof (S, drift) },
+            { pid::hpf, offsetof (S, hpfHz) }, { pid::lpf, offsetof (S, lpfHz) }, { pid::res, offsetof (S, res) },
+            { pid::vcfEnv, offsetof (S, vcfEnv) }, { pid::vcfLfo1, offsetof (S, vcfLfo1) }, { pid::vcfDds2, offsetof (S, vcfDds2) },
+            { pid::vcaEnv, offsetof (S, vcaEnv) }, { pid::vcaLfo1, offsetof (S, vcaLfo1) }, { pid::vcaDds2, offsetof (S, vcaDds2) },
+            { pid::env1AttackHold, offsetof (S, env1AttackHold) }, { pid::env1Attack, offsetof (S, env1Attack) },
+            { pid::env1DecayHold, offsetof (S, env1DecayHold) }, { pid::env1Decay, offsetof (S, env1Decay) },
+            { pid::env1Sustain, offsetof (S, env1Sustain) }, { pid::env1Release, offsetof (S, env1Release) },
+            { pid::env2Attack, offsetof (S, env2Attack) }, { pid::env2DecayHold, offsetof (S, env2DecayHold) },
+            { pid::env2Decay, offsetof (S, env2Decay) }, { pid::env2Sustain, offsetof (S, env2Sustain) },
+            { pid::env2Release, offsetof (S, env2Release) },
+            { pid::lfo1Rate, offsetof (S, lfo1Rate) }, { pid::lfo1Delay, offsetof (S, lfo1Delay) },
+            { pid::lfo1LrPhase, offsetof (S, lfo1LrPhase) },
+            { pid::lfo2Rate, offsetof (S, lfo2Rate) }, { pid::lfo2Delay, offsetof (S, lfo2Delay) },
+            { pid::lfo2RateMod, offsetof (S, lfo2RateMod) }, { pid::lfo2Dds, offsetof (S, lfo2Dds) },
+            { pid::lfo2Vcf, offsetof (S, lfo2Vcf) }, { pid::lfo2Vca, offsetof (S, lfo2Vca) },
+            { pid::bendDds, offsetof (S, bendDds) }, { pid::bendVcf, offsetof (S, bendVcf) },
+            { pid::portamento, offsetof (S, portamento) },
+            { pid::binauralDetune, offsetof (S, binauralDetune) }, { pid::stereoWidth, offsetof (S, stereoWidth) },
+            { pid::velCurve, offsetof (S, velCurve) }, { pid::velSens, offsetof (S, velSens) },
+            { pid::chorusRate, offsetof (S, chorusRate) }, { pid::chorusDepth, offsetof (S, chorusDepth) },
+            { pid::chorusDelay, offsetof (S, chorusDelayMs) }, { pid::chorusFeedback, offsetof (S, chorusFeedback) },
+            { pid::chorusWidth, offsetof (S, chorusWidth) }, { pid::chorusMix, offsetof (S, chorusMix) },
+            { pid::delayMs, offsetof (S, delayMs) }, { pid::delayFeedback, offsetof (S, delayFeedback) },
+            { pid::delayMix, offsetof (S, delayMix) }, { pid::delayLowCut, offsetof (S, delayLowCutHz) },
+            { pid::delayHighCut, offsetof (S, delayHighCutHz) },
+            { pid::reverbMix, offsetof (S, reverbMix) }, { pid::reverbSize, offsetof (S, reverbSize) },
+            { pid::reverbDecay, offsetof (S, reverbDecay) }, { pid::reverbPreDelay, offsetof (S, reverbPreDelayMs) },
+            { pid::reverbDamping, offsetof (S, reverbDampingHz) }, { pid::reverbLowCut, offsetof (S, reverbLowCutHz) },
+            { pid::reverbWidth, offsetof (S, reverbWidth) }, { pid::reverbModulation, offsetof (S, reverbModulation) },
+            { pid::macro1, offsetof (S, macros) + 0 * sizeof (float) }, { pid::macro2, offsetof (S, macros) + 1 * sizeof (float) },
+            { pid::macro3, offsetof (S, macros) + 2 * sizeof (float) }, { pid::macro4, offsetof (S, macros) + 3 * sizeof (float) },
+            { pid::macro5, offsetof (S, macros) + 4 * sizeof (float) }, { pid::macro6, offsetof (S, macros) + 5 * sizeof (float) },
+            { pid::macro7, offsetof (S, macros) + 6 * sizeof (float) }, { pid::macro8, offsetof (S, macros) + 7 * sizeof (float) },
+            { pid::mseg1Time, offsetof (S, msegTime) }, { pid::mseg2Time, offsetof (S, msegTime) + sizeof (float) },
+            { pid::filter2Cutoff, offsetof (S, f2Cutoff) }, { pid::filter2Res, offsetof (S, f2Res) },
+            { pid::filter2Env, offsetof (S, f2Env) }, { pid::filter2Keytrack, offsetof (S, f2Keytrack) },
+            { pid::filter2Drive, offsetof (S, f2Drive) }, { pid::filter2Mix, offsetof (S, f2Mix) },
+            { pid::delayDuck, offsetof (S, delayDuck) }, { pid::reverbDuck, offsetof (S, reverbDuck) },
+            { pid::distDrive, offsetof (S, distDrive) }, { pid::distTone, offsetof (S, distTone) }, { pid::distMix, offsetof (S, distMix) },
+            { pid::eqLowFreq, offsetof (S, eqLowFreq) }, { pid::eqLowGain, offsetof (S, eqLowGain) },
+            { pid::eqMidFreq, offsetof (S, eqMidFreq) }, { pid::eqMidGain, offsetof (S, eqMidGain) },
+            { pid::eqMidQ, offsetof (S, eqMidQ) }, { pid::eqHighFreq, offsetof (S, eqHighFreq) },
+            { pid::eqHighGain, offsetof (S, eqHighGain) },
+            { pid::compThreshold, offsetof (S, compThreshold) }, { pid::compRatio, offsetof (S, compRatio) },
+            { pid::compAttack, offsetof (S, compAttackMs) }, { pid::compRelease, offsetof (S, compReleaseMs) },
+            { pid::compMakeup, offsetof (S, compMakeup) }, { pid::compMix, offsetof (S, compMix) },
+            { pid::phaserRate, offsetof (S, phaserRate) }, { pid::phaserDepth, offsetof (S, phaserDepth) },
+            { pid::phaserFeedback, offsetof (S, phaserFeedback) }, { pid::phaserMix, offsetof (S, phaserMix) },
+            { pid::flangerRate, offsetof (S, flangerRate) }, { pid::flangerDepth, offsetof (S, flangerDepth) },
+            { pid::flangerFeedback, offsetof (S, flangerFeedback) }, { pid::flangerMix, offsetof (S, flangerMix) },
+        };
+        for (const auto& [suffix, offset] : fields)
+        {
+            const int index = findLayerSpecIndex (suffix);
+            jassert (index >= 0 && getLayerParamSpecs()[(size_t) index].kind == Kind::floatParam);
+            if (index >= 0)
+                table[(size_t) index] = (int) offset;
+        }
+        return table;
+    }();
+
+    if (specIndex < 0 || specIndex >= (int) kLayerParamCount || offsets[(size_t) specIndex] < 0)
+        return nullptr;
+    return reinterpret_cast<float*> (reinterpret_cast<char*> (this) + offsets[(size_t) specIndex]);
 }
 
 //==============================================================================

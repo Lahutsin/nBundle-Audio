@@ -3,10 +3,10 @@
 //   nSynthTests --list               list test names
 //   nSynthTests --only "<name>"      run a single test
 //   nSynthTests --dump-params <file> write the Markdown parameter table (docs/02-PARAMETERS.md)
-//   nSynthTests --snapshot <file.png> [scale] [--browser | --matrix | --direct | --waves]
-//                                    render the editor (optionally with the preset browser, the mod
-//                                    matrix, its direct mapping page or the wave bank open) to a PNG
-//                                    (docs/Plugin.png, docs/PresetBrowser.png, docs/ModMatrix*.png, docs/WaveBank.png)
+//   nSynthTests --snapshot <file.png> [scale] [--browser | --synth | --mod | --fx | --waves]
+//                                    render the editor (optionally with the preset browser, a page with
+//                                    example modulation, or the wave bank open) to a PNG
+//                                    (docs/Plugin.png, docs/PresetBrowser.png, docs/ModPage.png, docs/FxPage.png, docs/WaveBank.png)
 #include <juce_gui_basics/juce_gui_basics.h>
 #include "Core/Params/ParamRegistry.h"
 #include "PluginProcessor.h"
@@ -94,23 +94,36 @@ int main (int argc, char* argv[])
             editor->openPresetBrowser (nSynth::PresetKind::patch);
             editor->getPresetBrowser().loadRow (2, false);
         }
-        if (args.contains ("--matrix") || args.contains ("--direct"))
+        if (args.contains ("--mod") || args.contains ("--synth") || args.contains ("--fx"))
         {
-            // Example routes so the screenshot shows filled cells, clear buttons and both signs.
+            // Example routes so the screenshot shows filled slots, rings and both polarities.
             auto& matrix = proc.getEngine().modMatrix (Layer::upper);
-            matrix.setFixedAmount (ModSource::env1, ModTarget::waveMod, 0.6f);
-            matrix.setFixedAmount (ModSource::velocity, ModTarget::hpfCutoff, -0.3f);
-            matrix.setFixedAmount (ModSource::expression, ModTarget::oscillatorMix, 0.5f);
-            matrix.setFixedAmount (ModSource::ribbon, ModTarget::crossMod, 0.75f);
-            matrix.setFixedAmount (ModSource::lfo2, ModTarget::delayTime, -0.2f);
-            matrix.setDirectAmount (ModSource::velocity, DirectModTarget::lpfCutoff, 0.45f);
-            matrix.setDirectAmount (ModSource::timbre, DirectModTarget::lpfCutoff, 0.8f);
-            matrix.setDirectAmount (ModSource::polyAftertouch, DirectModTarget::vcaLfo1Amount, 0.6f);
-            matrix.setDirectAmount (ModSource::noteNumber, DirectModTarget::env2Decay, -0.35f);
-            matrix.setDirectAmount (ModSource::expression, DirectModTarget::delayMix, 0.5f);
-            editor->showModMatrixPage (true);
-            editor->getModMatrixPage().setLayer (Layer::upper);
-            editor->getModMatrixPage().showDirect (args.contains ("--direct"));
+            matrix.addRoute (ModSource::env2, findLayerSpecIndex (pid::lpf), 0.45f);
+            matrix.addRoute (ModSource::lfo1, findLayerSpecIndex (pid::pwmWave), 0.3f, true);
+            matrix.addRoute (ModSource::mseg1, findLayerSpecIndex (pid::filter2Cutoff), 0.6f, false, 0.4f);
+            matrix.addRoute (ModSource::macro1, findLayerSpecIndex (pid::reverbMix), 0.5f);
+            matrix.addRoute (ModSource::velocity, findLayerSpecIndex (pid::vcaEnv), -0.25f);
+            matrix.addRoute (ModSource::mseg2, findLayerSpecIndex (pid::distDrive), 0.4f, true);
+            matrix.setMacroName (0, "Space");
+            matrix.setMseg (1, MsegShape::make (MsegShape::Preset::steps));
+            auto set = [&proc] (const char* suffix, float value)
+            {
+                auto* parameter = proc.getState().getParameter (layerParamId (Layer::upper, suffix));
+                parameter->setValueNotifyingHost (parameter->convertTo0to1 (value));
+            };
+            set (pid::filter2Routing, 1.0f);
+            set (pid::distOn, 1.0f);
+            set (pid::eqOn, 1.0f);
+            set (pid::eqLowGain, 3.0f);
+            set (pid::eqMidGain, -4.5f);
+            set (pid::eqHighGain, 2.0f);
+            set (pid::compOn, 1.0f);
+            set (pid::reverbMix, 0.3f);
+            set (pid::macro1, 0.4f);
+            editor->showPage (args.contains ("--mod") ? NSynthAudioProcessorEditor::Page::mod
+                              : args.contains ("--fx") ? NSynthAudioProcessorEditor::Page::fx
+                                                       : NSynthAudioProcessorEditor::Page::synth);
+            editor->updateModulationDisplay();
         }
         if (args.contains ("--waves"))
             editor->showWaveBrowserPage (true);

@@ -2,17 +2,17 @@
 
 This repository contains the JUCE version of **nSynth** — a 128-voice,
 bi-timbral hybrid digital/analog-modeled polyphonic synthesizer with
-binaural stereo voice pairing, dual-layer modulation, 32 custom wavetable
-slots, adjustable velocity, and studio effects (chorus, tempo-synced delay,
-reverb).
+binaural stereo voice pairing, a free modulation matrix (64 slots, 8 macros,
+two drawable MSEGs), a second multimode filter, 32 custom wavetable slots,
+adjustable velocity, and a reorderable eight-module effect chain per layer.
 
 ![nSynth plugin UI](docs/Plugin.png)
 
 ![nSynth preset browser](docs/PresetBrowser.png)
 
-![nSynth mod matrix](docs/ModMatrix.png)
+![nSynth MOD page: MSEGs and modulation slots](docs/ModPage.png)
 
-![nSynth mod matrix, direct mapping](docs/ModMatrixDirect.png)
+![nSynth FX page: the effect chain](docs/FxPage.png)
 
 ![nSynth wave bank](docs/WaveBank.png)
 
@@ -59,26 +59,43 @@ factory content are implemented:
   (how far apart the left/right voices sit; 1 = the former hard left/right).
 - Velocity: Static (default, every note at STATIC VEL) or Dynamic (played velocity
   through an adjustable curve), plus sensitivity for level and brightness.
-- Per-layer air shelf -> chorus (I/II/I+II voices, rate, depth, delay, feedback,
-  width, mix) -> delay (tempo divisions 1/64..1/1 incl. triplets/dotted or 1..2000 ms,
-  feedback, mix, ping-pong, low/high cut, freeze) -> reverb (size, decay, pre-delay,
-  high/low cut, width, modulation, mix).
+- FILTER 2 per voice, Off / Serial (after the VCF) / Parallel (MIX blends both): LP 12/24,
+  HP 12/24, band pass, notch (ZDF state-variable), comb +/- (CUTOFF tunes it, RESONANCE is
+  the feedback) and formant (CUTOFF morphs A-E-I-O-U); env amount (ENV1/1+2/ENV2), keytrack, drive.
+- Modulation: 64 slots, each source -> any continuous layer parameter (per voice, or per
+  block for the effects and pan) with amount, curve and uni/bipolar response. Sources: ENV1/2,
+  MSEG 1/2, LFO1/2, DDS2, velocity, note, per-note random, poly AT, MPE pitch/timbre, mod wheel,
+  expression, ribbon and 8 macros (renamable). Knobs show the modulation range and the live
+  value as a ring; route by dragging a source chip onto a knob, the knob's right-click menu, or
+  the slot list. Schema 1/2 matrices (fixed grid / direct mapping) load as slots.
+- MSEG 1/2: drawable multi-segment envelopes / LFOs (up to 32 points, bendable segments, grid
+  snap, presets), Env (one-shot) / Loop / Free (layer clock) modes, time 10 ms..30 s or synced
+  1/16..8 bars.
+- Per-layer air shelf -> eight effect modules in a patch-stored, reorderable order (default:
+  distortion -> EQ -> compressor -> chorus -> phaser -> flanger -> delay -> reverb), each
+  switched on/off with a 10 ms crossfade: distortion (soft/hard/fold with anti-derivative
+  anti-aliasing, tube, crush; tone, mix), 3-band EQ, compressor (soft knee, parallel mix, keyed
+  by the layer itself or the other layer for sidechain ducking), chorus (I/II/I+II), phaser,
+  flanger, delay (tempo divisions 1/64..1/1 incl. triplets/dotted or 1..2000 ms, feedback,
+  ping-pong, low/high cut, freeze, duck) and reverb (size, decay, pre-delay 0.1..250 ms,
+  high/low cut, width, modulation, duck).
 - Fixed 2x internal oversampling; Mix + optional Upper/Lower outputs; a stereo-linked
   safety limiter (-0.3 dBFS ceiling) on the main mix; a non-finite sample can never reach the
   FX feedback loops (the layer would otherwise go silent until reload); lock-free atomic
   work-stealing across all CPU cores.
 - Editor generated from the parameter registry with uniform scaling 50-200 %: one layer at
-  a time (UPPER / LOWER tabs show the loaded patch), sections in signal-flow order
-  (oscillators -> filter -> amp, envelopes/LFOs, voice and effects), performance settings and
-  live controllers in one strip.
+  a time (UPPER / LOWER tabs show the loaded patch) on three pages: SYNTH (oscillators ->
+  filter -> amp, envelopes/LFOs, voicing, FILTER 2, macros), MOD (MSEG editors, modulation
+  slots) and FX (the effect chain as cards in processing order); performance settings and live
+  controllers in one strip.
 - Performance presets (`.nsynthperf`), layer patches (`.nsynthpatch`), layer init/copy,
   and a preset browser (see below).
 
 Factory content: 112 hand-designed, loudness-matched patches in seven categories
 and 16 performances (8 layers, 8 splits), plus an offline DSP/CPU analysis target.
-Verified on Linux: `nSynthTests` (81,065 checks, 0 failures, including a random-patch
+Verified on Linux: `nSynthTests` (95,664 checks, 0 failures, including a random-patch
 robustness test). AU validation and the AU build have not been re-run since the
-voice/effects rework (now 215 parameters).
+modulation/effects rework (now 335 parameters).
 Manual host/controller/pluginval
 checks remain open. Current verification status is in
 [docs/07-QA-AND-VALIDATION.md](./docs/07-QA-AND-VALIDATION.md), with phase
@@ -244,10 +261,10 @@ Studio generator.
 ./JUCE/build/nSynthTests_artefacts/Release/nSynthTests          # all tests, exit code 1 on failure
 ./JUCE/build/nSynthTests_artefacts/Release/nSynthTests --only Engine
 ./JUCE/build/nSynthTests_artefacts/Release/nSynthTests --dump-params docs/02-PARAMETERS.gen.md
-./JUCE/build/nSynthTests_artefacts/Release/nSynthTests --snapshot docs/Plugin.png 1.0
+./JUCE/build/nSynthTests_artefacts/Release/nSynthTests --snapshot docs/Plugin.png 1.0 --synth
 ./JUCE/build/nSynthTests_artefacts/Release/nSynthTests --snapshot docs/PresetBrowser.png 1.0 --browser
-./JUCE/build/nSynthTests_artefacts/Release/nSynthTests --snapshot docs/ModMatrix.png 1.0 --matrix
-./JUCE/build/nSynthTests_artefacts/Release/nSynthTests --snapshot docs/ModMatrixDirect.png 1.0 --direct
+./JUCE/build/nSynthTests_artefacts/Release/nSynthTests --snapshot docs/ModPage.png 1.0 --mod
+./JUCE/build/nSynthTests_artefacts/Release/nSynthTests --snapshot docs/FxPage.png 1.0 --fx
 ./JUCE/build/nSynthTests_artefacts/Release/nSynthTests --snapshot docs/WaveBank.png 1.0 --waves
 auval -v aumu nSyn NSYA                                          # macOS: AU VALIDATION SUCCEEDED
 ```

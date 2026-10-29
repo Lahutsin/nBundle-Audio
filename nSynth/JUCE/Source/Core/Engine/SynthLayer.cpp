@@ -2,9 +2,30 @@
 
 namespace nsynth
 {
+namespace
+{
+double msegCycleSeconds (const LayerSnapshot& s, int m, double bpm) noexcept
+{
+    return s.msegSync[(size_t) m] ? rates::msegDivisionBeats (toInt (s.msegDivision[(size_t) m])) * 60.0 / juce::jmax (1.0, bpm)
+                                  : (double) juce::jmax (0.001f, s.msegTime[(size_t) m]);
+}
+} // namespace
+
 SynthLayer::SynthLayer (juce::AudioProcessorValueTreeState& state, Layer layerId)
     : id (layerId), reader (state, layerId), rng (layerId == Layer::upper ? 11 : 23)
 {
+    for (auto& offset : uiModOffset)
+        offset.store (0.0f);
+    for (auto& phase : uiMsegPhase)
+        phase.store (-1.0f);
+    layerSources.fill (0.0f);
+}
+
+float SynthLayer::getModulationOffset (int parameterIndex) const noexcept
+{
+    if (parameterIndex < 0 || parameterIndex >= (int) kLayerParamCount)
+        return 0.0f;
+    return uiModOffset[(size_t) parameterIndex].load (std::memory_order_relaxed);
 }
 
 void SynthLayer::prepare (double hostSampleRate, int maxBlockSize, VoiceRenderPool& pool)
@@ -20,11 +41,21 @@ void SynthLayer::prepare (double hostSampleRate, int maxBlockSize, VoiceRenderPo
     oversampler->reset();
 
     hostScratch.setSize (2, maxBlockSize);
+    keyBuffer.setSize (2, maxBlockSize);
+    keyBuffer.clear();
+    fxDry.setSize (2, maxBlockSize);
     parallelScratch.setSize (2 * (pool.getNumWorkers() + 1), maxBlockSize * kOversamplingFactor);
     air.prepare (hostSampleRate);
     chorus.prepare (hostSampleRate, maxBlockSize);
     delay.prepare (hostSampleRate, maxBlockSize);
     reverb.prepare (hostSampleRate, maxBlockSize);
+    distortion.prepare (hostSampleRate);
+    eq.prepare (hostSampleRate);
+    compressor.prepare (hostSampleRate);
+    phaser.prepare (hostSampleRate);
+    flanger.prepare (hostSampleRate, maxBlockSize);
+    fxFade.fill (-1.0f);
+    fxIdle.fill (true);
 
     const double osRate = hostRate * kOversamplingFactor;
     for (auto* v : voices)
@@ -83,6 +114,12 @@ void SynthLayer::beginBlock (int numHostSamples, const VoiceContext& context, ui
 
     lfo2MasterPhase += rates::lowFrequencyHz (snap.lfo2Rate) * numHostSamples / hostRate;
     lfo2MasterPhase -= std::floor (lfo2MasterPhase);
+    for (int m = 0; m < 2; ++m)
+    {
+        auto& phase = msegMasterPhase[(size_t) m];
+        phase += numHostSamples / (msegCycleSeconds (snap, m, ctx.bpm) * hostRate);
+        phase -= std::floor (phase);
+    }
 }
 
 void SynthLayer::renderSegment (int hostStart, int hostNum) noexcept
@@ -159,12 +196,18 @@ void SynthLayer::renderSingleVoice (void* rawContext, int itemIndex, int lane) n
 
 void SynthLayer::finishBlock (juce::AudioBuffer<float>& dest, int numHostSamples)
 {
+    finishVoices (numHostSamples);
+    applyEffects (dest, numHostSamples, nullptr);
+}
+
+void SynthLayer::finishVoices (int numHostSamples)
+{
     juce::dsp::AudioBlock<float> hostBlock (hostScratch);
     auto outBlock = hostBlock.getSubBlock (0, (size_t) numHostSamples);
     oversampler->processSamplesDown (outBlock);
 
-    // A non-finite sample would circulate forever in the chorus/delay/reverb feedback and
-    // silence the layer until reload: drop the block and restart the signal path cleanly.
+    // A non-finite sample would circulate forever in the effect feedback paths and silence the
+    // layer until reload: drop the block and restart the signal path cleanly.
     bool finite = true;
     for (int ch = 0; ch < 2 && finite; ++ch)
     {
@@ -177,81 +220,242 @@ void SynthLayer::finishBlock (juce::AudioBuffer<float>& dest, int numHostSamples
         hostScratch.clear (0, numHostSamples);
         oversampler->reset();
         air.reset();
-        chorus.reset();
-        delay.reset();
-        reverb.reset();
+        for (int m = 0; m < ModMatrixData::kFxModules; ++m)
+            resetFxModule ((FxModule) m);
     }
 
-    // Layer PAN as a stereo balance control.
-    const float gl = juce::jmin (1.0f, 1.0f - snap.pan), gr = juce::jmin (1.0f, 1.0f + snap.pan);
-    hostScratch.applyGain (0, 0, numHostSamples, gl);
-    hostScratch.applyGain (1, 0, numHostSamples, gr);
-    air.process (hostScratch, 0, numHostSamples);
-
-    // Chorus -> delay -> reverb, in series.
-    StereoChorus::Settings chorusSettings;
-    chorusSettings.mode = snap.chorus;
-    chorusSettings.rateHz = snap.chorusRate;
-    chorusSettings.depth = snap.chorusDepth;
-    chorusSettings.delayMs = snap.chorusDelayMs;
-    chorusSettings.feedback = snap.chorusFeedback;
-    chorusSettings.width = snap.chorusWidth;
-    chorusSettings.mix = snap.chorusMix;
-    chorus.process (hostScratch, 0, numHostSamples, chorusSettings);
-
-    const std::array<float, ModMatrixData::sourceCount>* sources = nullptr;
-    for (auto* voice : voices)
-        if (voice->isActive())
-            sources = &voice->getLastModSources();
-
-    float delayTimeMod = 0.0f;
-    float delayMix = snap.delayMix;
-    float delayFeedback = snap.delayFeedback;
-    if (sources != nullptr && blockModMatrix != nullptr)
+    // Layer PAN as a stereo balance control (modulated pan is applied with the effects).
+    static const int panIndex = findLayerSpecIndex (pid::pan);
+    if (blockModMatrix == nullptr || ! blockModMatrix->modulated[(size_t) panIndex])
     {
-        for (int source = 0; source < ModMatrixData::sourceCount; ++source)
+        const float gl = juce::jmin (1.0f, 1.0f - snap.pan), gr = juce::jmin (1.0f, 1.0f + snap.pan);
+        hostScratch.applyGain (0, 0, numHostSamples, gl);
+        hostScratch.applyGain (1, 0, numHostSamples, gr);
+    }
+    air.process (hostScratch, 0, numHostSamples);
+    for (int ch = 0; ch < 2; ++ch)
+        keyBuffer.copyFrom (ch, 0, hostScratch, ch, 0, numHostSamples);
+
+    // Editor feedback: what the newest voice is doing.
+    const Voice* newest = nullptr;
+    for (auto* voice : voices)
+        if (voice->isActive() && (newest == nullptr || voice->getAge() > newest->getAge()))
+            newest = voice;
+    if (newest != nullptr)
+        layerSources = newest->getLastModSources();
+    if (blockModMatrix != nullptr)
+        for (size_t d = 0; d < kLayerParamCount; ++d)
+            if (blockModMatrix->modulated[d] && ! ModMatrix::isLayerDestination ((int) d))
+                uiModOffset[d].store (newest != nullptr ? newest->getModOffsets()[d] : 0.0f, std::memory_order_relaxed);
+    for (int m = 0; m < 2; ++m)
+        uiMsegPhase[(size_t) m].store (newest != nullptr ? newest->getMsegPhase (m) : -1.0f, std::memory_order_relaxed);
+}
+
+bool SynthLayer::fxModuleEnabled (FxModule module, const LayerSnapshot& fx) const noexcept
+{
+    switch (module)
+    {
+        case FxModule::distortion: return fx.distOn;
+        case FxModule::eq:         return fx.eqOn;
+        case FxModule::compressor: return fx.compOn;
+        case FxModule::chorus:     return fx.chorus != ChorusMode::off;
+        case FxModule::phaser:     return fx.phaserOn;
+        case FxModule::flanger:    return fx.flangerOn;
+        case FxModule::delay:      return fx.delayOn;
+        case FxModule::reverb:     return fx.reverbOn;
+        case FxModule::count:      break;
+    }
+    return false;
+}
+
+void SynthLayer::resetFxModule (FxModule module) noexcept
+{
+    switch (module)
+    {
+        case FxModule::distortion: distortion.reset(); break;
+        case FxModule::eq:         eq.reset(); break;
+        case FxModule::compressor: compressor.reset(); break;
+        case FxModule::chorus:     chorus.reset(); break;
+        case FxModule::phaser:     phaser.reset(); break;
+        case FxModule::flanger:    flanger.reset(); break;
+        case FxModule::delay:      delay.reset(); break;
+        case FxModule::reverb:     reverb.reset(); break;
+        case FxModule::count:      break;
+    }
+}
+
+void SynthLayer::processFxModule (FxModule module, juce::AudioBuffer<float>& buffer, int n, const LayerSnapshot& fx,
+                                  double delaySeconds, const juce::AudioBuffer<float>* key) noexcept
+{
+    switch (module)
+    {
+        case FxModule::distortion:
+            distortion.process (buffer, 0, n, { fx.distType, fx.distDrive, fx.distTone, fx.distMix });
+            break;
+        case FxModule::eq:
+            eq.process (buffer, 0, n, { fx.eqLowFreq, fx.eqLowGain, fx.eqMidFreq, fx.eqMidGain, fx.eqMidQ, fx.eqHighFreq, fx.eqHighGain });
+            break;
+        case FxModule::compressor:
+            compressor.process (buffer, 0, n, { fx.compThreshold, fx.compRatio, fx.compAttackMs, fx.compReleaseMs, fx.compMakeup, fx.compMix },
+                                fx.compKey == CompressorKey::otherLayer ? key : nullptr);
+            break;
+        case FxModule::chorus:
         {
-            delayTimeMod += (*sources)[(size_t) source]
-                          * blockModMatrix->fixed[(size_t) source][(size_t) ModTarget::delayTime];
-            delayMix += (*sources)[(size_t) source]
-                      * blockModMatrix->direct[(size_t) source][(size_t) DirectModTarget::delayMix];
-            delayFeedback += (*sources)[(size_t) source]
-                           * blockModMatrix->direct[(size_t) source][(size_t) DirectModTarget::delayFeedback];
+            StereoChorus::Settings settings;
+            settings.mode = fx.chorus;
+            settings.rateHz = fx.chorusRate;
+            settings.depth = fx.chorusDepth;
+            settings.delayMs = fx.chorusDelayMs;
+            settings.feedback = fx.chorusFeedback;
+            settings.width = fx.chorusWidth;
+            settings.mix = fx.chorusMix;
+            chorus.process (buffer, 0, n, settings);
+            break;
+        }
+        case FxModule::phaser:
+            phaser.process (buffer, 0, n, { fx.phaserRate, fx.phaserDepth, fx.phaserFeedback, fx.phaserMix });
+            break;
+        case FxModule::flanger:
+            flanger.process (buffer, 0, n, { fx.flangerRate, fx.flangerDepth, fx.flangerFeedback, fx.flangerMix });
+            break;
+        case FxModule::delay:
+        {
+            StereoDelay::Settings settings;
+            settings.timeSeconds = delaySeconds;
+            settings.feedback = juce::jlimit (0.0f, 1.0f, fx.delayFeedback);
+            settings.mix = juce::jlimit (0.0f, 1.0f, fx.delayMix);
+            settings.pingPong = fx.delayPingPong;
+            settings.freeze = fx.delayFreeze;
+            settings.lowCutHz = fx.delayLowCutHz;
+            settings.highCutHz = fx.delayHighCutHz;
+            settings.duck = fx.delayDuck;
+            delay.process (buffer, 0, n, settings);
+            break;
+        }
+        case FxModule::reverb:
+        {
+            StereoReverb::Settings settings;
+            settings.mix = fx.reverbMix;
+            settings.size = fx.reverbSize;
+            settings.decaySeconds = fx.reverbDecay;
+            settings.preDelayMs = fx.reverbPreDelayMs;
+            settings.dampingHz = fx.reverbDampingHz;
+            settings.lowCutHz = fx.reverbLowCutHz;
+            settings.width = fx.reverbWidth;
+            settings.modulation = fx.reverbModulation;
+            settings.duck = fx.reverbDuck;
+            reverb.process (buffer, 0, n, settings);
+            break;
+        }
+        case FxModule::count:
+            break;
+    }
+}
+
+void SynthLayer::applyEffects (juce::AudioBuffer<float>& dest, int numHostSamples, const juce::AudioBuffer<float>* otherLayerKey)
+{
+    // Effect parameters with modulation slots: evaluated once per block from the sources of the
+    // newest voice (the last ones heard while the tails ring out); macros, mod wheel and
+    // expression always follow their current values.
+    static const int delayMsIndex = findLayerSpecIndex (pid::delayMs);
+    static const int panIndex = findLayerSpecIndex (pid::pan);
+    LayerSnapshot fx = snap;
+    float delayTimeOffset = 0.0f;
+    if (blockModMatrix != nullptr && blockModMatrix->anyLayerDestination)
+    {
+        auto sources = layerSources;
+        for (int m = 0; m < ModMatrixData::kMacros; ++m)
+            sources[(size_t) ModSource::macro1 + (size_t) m] = snap.macros[(size_t) m];
+        sources[(size_t) ModSource::modWheel] = juce::jlimit (0.0f, 1.0f, ctx.modLever);
+        sources[(size_t) ModSource::expression] = juce::jlimit (0.0f, 1.0f, ctx.expression);
+
+        std::array<float, kLayerParamCount> offsets {};
+        const auto& matrix = *blockModMatrix;
+        for (int k = 0; k < matrix.activeSlotCount; ++k)
+        {
+            const int s = matrix.activeSlots[(size_t) k];
+            if (! matrix.slotOnLayer[(size_t) s])
+                continue;
+            const auto& slot = matrix.slots[(size_t) s];
+            offsets[(size_t) slot.destination] += slot.shape (sources[(size_t) slot.source]) * slot.amount;
+        }
+        for (size_t d = 0; d < kLayerParamCount; ++d)
+        {
+            if (! matrix.modulated[d] || ! ModMatrix::isLayerDestination ((int) d))
+                continue;
+            const auto& range = getLayerParamRange ((int) d);
+            *fx.floatField ((int) d) = range.convertFrom0to1 (juce::jlimit (0.0f, 1.0f, range.convertTo0to1 (*snap.floatField ((int) d)) + offsets[d]));
+            uiModOffset[d].store (offsets[d], std::memory_order_relaxed);
+        }
+        delayTimeOffset = offsets[(size_t) delayMsIndex];
+
+        if (matrix.modulated[(size_t) panIndex])
+        {
+            const float gl = juce::jmin (1.0f, 1.0f - fx.pan), gr = juce::jmin (1.0f, 1.0f + fx.pan);
+            hostScratch.applyGain (0, 0, numHostSamples, gl);
+            hostScratch.applyGain (1, 0, numHostSamples, gr);
         }
     }
 
-    StereoDelay::Settings delaySettings;
+    double delaySeconds = 0.0;
     if (snap.delaySync)
     {
         // DELAY TIME modulation moves through the divisions.
         constexpr int divisions = toInt (DelayDivision::d1_1) + 1;
-        const float fader = ((float) toInt (snap.delayDivision) + 0.5f) / (float) divisions + delayTimeMod;
-        delaySettings.timeSeconds = rates::delayDivisionBeats (rates::divisionIndex (fader, divisions)) * 60.0 / ctx.bpm;
+        const float fader = ((float) toInt (snap.delayDivision) + 0.5f) / (float) divisions + delayTimeOffset;
+        delaySeconds = rates::delayDivisionBeats (rates::divisionIndex (fader, divisions)) * 60.0 / ctx.bpm;
     }
     else
     {
-        static const auto msRange = makeRange (*findLayerSpec (pid::delayMs));
-        const float fader = juce::jlimit (0.0f, 1.0f, msRange.convertTo0to1 (snap.delayMs) + delayTimeMod);
-        delaySettings.timeSeconds = 0.001 * (double) msRange.convertFrom0to1 (fader);
+        delaySeconds = 0.001 * (double) fx.delayMs;
     }
-    delaySettings.feedback = juce::jlimit (0.0f, 1.0f, delayFeedback);
-    delaySettings.mix = juce::jlimit (0.0f, 1.0f, delayMix);
-    delaySettings.pingPong = snap.delayPingPong;
-    delaySettings.freeze = snap.delayFreeze;
-    delaySettings.lowCutHz = snap.delayLowCutHz;
-    delaySettings.highCutHz = snap.delayHighCutHz;
-    delay.process (hostScratch, 0, numHostSamples, delaySettings);
 
-    StereoReverb::Settings reverbSettings;
-    reverbSettings.mix = snap.reverbMix;
-    reverbSettings.size = snap.reverbSize;
-    reverbSettings.decaySeconds = snap.reverbDecay;
-    reverbSettings.preDelayMs = snap.reverbPreDelayMs;
-    reverbSettings.dampingHz = snap.reverbDampingHz;
-    reverbSettings.lowCutHz = snap.reverbLowCutHz;
-    reverbSettings.width = snap.reverbWidth;
-    reverbSettings.modulation = snap.reverbModulation;
-    reverb.process (hostScratch, 0, numHostSamples, reverbSettings);
+    // The modules in the patch's order. Switching one on or off crossfades over 10 ms; an
+    // inactive module is reset once and then skipped. The chorus fades its MODE itself.
+    const float fadeStep = (float) (1.0 / (0.01 * hostRate));
+    for (const auto module : blockModMatrix != nullptr ? blockModMatrix->fxOrder : ModMatrixData::defaultFxOrder())
+    {
+        const auto index = (size_t) module;
+        if (index >= fxFade.size())
+            continue;
+        const bool on = fxModuleEnabled (module, fx);
+        if (module == FxModule::chorus)
+        {
+            processFxModule (module, hostScratch, numHostSamples, fx, delaySeconds, otherLayerKey);
+            continue;
+        }
+        auto& fade = fxFade[index];
+        if (fade < 0.0f)
+            fade = on ? 1.0f : 0.0f;
+        if (! on && fade <= 0.0f)
+        {
+            if (! fxIdle[index])
+            {
+                resetFxModule (module);
+                fxIdle[index] = true;
+            }
+            continue;
+        }
+        fxIdle[index] = false;
+        if (on && fade >= 1.0f)
+        {
+            processFxModule (module, hostScratch, numHostSamples, fx, delaySeconds, otherLayerKey);
+            continue;
+        }
+        for (int ch = 0; ch < 2; ++ch)
+            fxDry.copyFrom (ch, 0, hostScratch, ch, 0, numHostSamples);
+        processFxModule (module, hostScratch, numHostSamples, fx, delaySeconds, otherLayerKey);
+        for (int i = 0; i < numHostSamples; ++i)
+        {
+            fade = juce::jlimit (0.0f, 1.0f, fade + (on ? fadeStep : -fadeStep));
+            for (int ch = 0; ch < 2; ++ch)
+            {
+                const float dry = fxDry.getSample (ch, i);
+                hostScratch.setSample (ch, i, dry + fade * (hostScratch.getSample (ch, i) - dry));
+            }
+        }
+    }
+    uiCompReduction.store (fx.compOn ? compressor.getGainReductionDb() : 0.0f, std::memory_order_relaxed);
 
     for (int ch = 0; ch < 2; ++ch)
         dest.copyFrom (ch, 0, hostScratch, ch, 0, numHostSamples);
@@ -325,21 +529,32 @@ void SynthLayer::startUnit (int unit, int note, float velocity, float pitchOffse
     const uint64_t age = ++(*ageCounter);
     static const auto lrPhaseRange = [] { return makeRange (*findLayerSpec (pid::lfo1LrPhase)); }();
     const auto matrixData = modMatrix.snapshot();
+    static const int lrPhaseIndex = findLayerSpecIndex (pid::lfo1LrPhase);
     float lrPhase = lrPhaseRange.convertTo0to1 (snap.lfo1LrPhase);
-    std::array<float, ModMatrixData::sourceCount> sources {
-        unitVoice (unit, 0).getLastModSources()[(size_t) ModSource::dds2],
-        juce::jlimit (0.0f, 1.0f, (float) (0.5 + 0.5 * std::sin (juce::MathConstants<double>::twoPi * lfo2MasterPhase))),
-        0.0f,
-        juce::jlimit (0.0f, 1.0f, velocity),
-        0.0f,
-        juce::jlimit (0.0f, 1.0f, ctx.expression),
-        juce::jlimit (0.0f, 1.0f, 0.5f + ctx.ribbonSemitones / 24.0f),
-        juce::jlimit (0.0f, 1.0f, (float) note / 127.0f),
-        0.5f,
-        0.0f
-    };
-    for (int source = 0; source < ModMatrixData::sourceCount; ++source)
-        lrPhase += sources[(size_t) source] * matrixData->direct[(size_t) source][(size_t) DirectModTarget::lfo1LrPhase];
+    if (matrixData->modulated[(size_t) lrPhaseIndex])
+    {
+        // LR PHASE / SPREAD is set when the note starts: the sources as they are now.
+        std::array<float, ModMatrixData::sourceCount> sources {};
+        sources.fill (0.0f);
+        sources[(size_t) ModSource::dds2] = unitVoice (unit, 0).getLastModSources()[(size_t) ModSource::dds2];
+        sources[(size_t) ModSource::lfo2] = juce::jlimit (0.0f, 1.0f, (float) (0.5 + 0.5 * std::sin (juce::MathConstants<double>::twoPi * lfo2MasterPhase)));
+        sources[(size_t) ModSource::velocity] = juce::jlimit (0.0f, 1.0f, velocity);
+        sources[(size_t) ModSource::expression] = juce::jlimit (0.0f, 1.0f, ctx.expression);
+        sources[(size_t) ModSource::ribbon] = juce::jlimit (0.0f, 1.0f, 0.5f + ctx.ribbonSemitones / 24.0f);
+        sources[(size_t) ModSource::noteNumber] = juce::jlimit (0.0f, 1.0f, (float) note / 127.0f);
+        sources[(size_t) ModSource::perNotePitch] = 0.5f;
+        sources[(size_t) ModSource::lfo1] = 0.5f;
+        sources[(size_t) ModSource::modWheel] = juce::jlimit (0.0f, 1.0f, ctx.modLever);
+        sources[(size_t) ModSource::random] = rng.nextFloat();
+        for (int m = 0; m < ModMatrixData::kMacros; ++m)
+            sources[(size_t) ModSource::macro1 + (size_t) m] = snap.macros[(size_t) m];
+        for (int k = 0; k < matrixData->activeSlotCount; ++k)
+        {
+            const auto& slot = matrixData->slots[matrixData->activeSlots[(size_t) k]];
+            if (slot.destination == lrPhaseIndex)
+                lrPhase += slot.shape (sources[(size_t) slot.source]) * slot.amount;
+        }
+    }
     const float spread = lrPhaseRange.convertFrom0to1 (juce::jlimit (0.0f, 1.0f, lrPhase));
     const bool lfo1Restarts = toInt (snap.lfo1Wave) < toInt (Lfo1Wave::hf) && snap.lfo1Mode != Lfo1Mode::freeOrNorm;
 
@@ -351,6 +566,7 @@ void SynthLayer::startUnit (int unit, int note, float velocity, float pitchOffse
     info.retrigger = retrigger;
     info.age = age;
     info.lfo2Phase = lfo2MasterPhase;
+    info.msegPhase = msegMasterPhase;
 
     // UNISON stacks are spread evenly over +/- 1.5 x DETUNE and scaled to about the level of a
     // single voice (slightly above the power-preserving 1/sqrt(n), which the detune and stereo
