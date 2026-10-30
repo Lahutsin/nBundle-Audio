@@ -92,7 +92,7 @@ AliasingMetrics measureDds1Aliasing()
 {
     constexpr int fftOrder = 16;
     constexpr int fftSize = 1 << fftOrder;
-    const double internalRate = sampleRate * SynthLayer::kOversamplingFactor;
+    const double internalRate = sampleRate * SynthLayer::kDefaultOversamplingFactor;
     const double frequency = 2000.0 * internalRate / fftSize;
     WaveBank bank;
     Dds1 oscillator;

@@ -159,7 +159,7 @@ public:
                     juce::MathConstants<double>::twoPi * 3.0 * i / MipWavetable::kTableSize);
             juce::String error;
             expect (WaveBank::writeWs6 (file, cycle, &error), error);
-            expect (rig.proc.getEngine().requestWaveImport (7, file, &error), error);
+            expect (rig.proc.getEngine().requestWaveImport (Layer::upper, 7, file, &error), error);
 
             juce::AudioBuffer<float> audio (2, 64);
             juce::MidiBuffer midi;
@@ -171,9 +171,44 @@ public:
             }
             expect (rig.proc.getEngine().getWaveImportState() == SynthEngine::WaveImportState::ready,
                     rig.proc.getEngine().getWaveImportError());
-            expectEquals (rig.proc.getEngine().getWaveBank().altCycle (7).size(), (size_t) MipWavetable::kTableSize);
-            expectWithinAbsoluteError (rig.proc.getEngine().getWaveBank().alt (7).read (0, 0.25), -1.0f, 0.01f);
+            expectEquals (rig.proc.getEngine().getWaveBank (Layer::upper)->altCycle (7).size(), (size_t) MipWavetable::kTableSize);
+            expectWithinAbsoluteError (rig.proc.getEngine().getWaveBank (Layer::upper)->alt (7).read (0, 0.25), -1.0f, 0.01f);
             file.deleteFile();
+        }
+
+        beginTest ("POLY + UNISON: adding notes re-distributes the stack without clicks");
+        {
+            // A click shows up as a spike in the second difference of an otherwise smooth (sine) signal.
+            auto roughness = [] (const std::vector<float>& x, size_t from, size_t to)
+            {
+                float worst = 0.0f;
+                for (size_t i = juce::jmax ((size_t) 2, from); i < to && i < x.size(); ++i)
+                    worst = juce::jmax (worst, std::abs (x[i] - 2.0f * x[i - 1] + x[i - 2]));
+                return worst;
+            };
+            for (auto binaural : { BinauralMode::off, BinauralMode::x2 })
+            {
+                Rig rig;
+                rig.setLayer (Layer::upper, pid::dds1Wave, (float) toInt (Dds1Wave::sine));
+                rig.setLayer (Layer::upper, pid::binaural, (float) toInt (binaural));
+                rig.setLayer (Layer::upper, pid::unison, 1.0f);
+                // A 10 ms attack: the onsets themselves are smooth, so what remains is the voice handover.
+                rig.setLayer (Layer::upper, pid::env2Attack, 0.01f);
+                rig.setPerf (pid::masterVolume, -12.0f);   // stay clear of the output limiter
+                const auto out = rig.render (43200, { { 0, on (60) }, { 14400, on (64) }, { 28800, on (67) } });
+                // Each later onset against the same chord once it has settled and against the first
+                // note's onset (no voice is taken over there; its attack corner sets the floor):
+                // a click stands out, the notes' own curvature and attack do not.
+                const float firstOnset = roughness (out.l, 0, 2400);
+                for (int onset : { 14400, 28800 })
+                {
+                    const float atOnset = roughness (out.l, (size_t) onset, (size_t) onset + 2400);
+                    const float settled = roughness (out.l, (size_t) onset + 9600, (size_t) onset + 14400);
+                    expect (atOnset < 2.0f * juce::jmax (settled, firstOnset),
+                            "note at " + juce::String (onset) + " clicks: " + juce::String (atOnset, 5) + " vs "
+                                + juce::String (juce::jmax (settled, firstOnset), 5));
+                }
+            }
         }
 
         beginTest ("no notes -> digital silence");
@@ -187,7 +222,7 @@ public:
         beginTest ("end-to-end pitch: DDS1 sine, A4 -> 440 Hz with fixed 2x oversampling; latency reported");
         {
             Rig rig;
-            expectEquals (SynthLayer::getOversamplingFactor(), 2);
+            expectEquals (rig.proc.getEngine().getOversamplingFactor(), 2);
             rig.setLayer (Layer::upper, pid::binaural, (float) toInt (BinauralMode::x1));
             rig.setLayer (Layer::upper, pid::dds1Wave, (float) toInt (Dds1Wave::sine));
             auto out = rig.render (48000, { { 0, on (69) } });

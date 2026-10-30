@@ -21,9 +21,11 @@ public:
     void mouseDoubleClick (const juce::MouseEvent&) override;
     void mouseMove (const juce::MouseEvent&) override;
     void mouseExit (const juce::MouseEvent&) override;
+    void resized() override { shapeCacheValid = false; }
     void setSnap (bool shouldSnap) { snap = shouldSnap; }
     bool getSnap() const noexcept { return snap; }
-    // Called by the page timer: redraws when the shape or the play position changed.
+    // Called by the page timer: redraws everything when the shape changed, only the play
+    // position's strip when the voice moved on.
     void refresh();
 
     static constexpr int kGridX = 16, kGridY = 8;
@@ -33,9 +35,13 @@ private:
     juce::Point<float> toScreen (float x, float y) const noexcept;
     juce::Point<float> fromScreen (juce::Point<float> p) const noexcept;
     juce::Point<float> handlePosition (int segmentEnd) const noexcept;   // segment ending at point `segmentEnd`
+    // Grid snapping of a plot position (SNAP on, or off while Shift is held).
+    juce::Point<float> snapped (juce::Point<float> v, const juce::ModifierKeys& mods) const noexcept;
     int pointAt (juce::Point<float> p) const noexcept;
     int handleAt (juce::Point<float> p) const noexcept;
     void store();
+    void rebuildShapeCache();
+    juce::Rectangle<int> playheadArea (float phase) const noexcept;
 
     nsynth::SynthEngine& engine;
     nsynth::Layer layer;
@@ -46,6 +52,9 @@ private:
     int dragPoint { -1 }, dragHandle { -1 }, hoverPoint { -1 }, hoverHandle { -1 };
     float dragStartCurve { 0.0f };
     float lastPhase { -2.0f };
+    // The shape's fill and stroke outline, rebuilt on edit, shape change and resize.
+    juce::Path shapeFill, shapeStroke;
+    bool shapeCacheValid { false };
 };
 
 class MsegPanel : public juce::Component

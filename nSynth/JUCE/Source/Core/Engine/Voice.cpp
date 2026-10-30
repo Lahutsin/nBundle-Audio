@@ -37,6 +37,11 @@ double msegSeconds (const LayerSnapshot& s, int m, double bpm) noexcept
 }
 } // namespace
 
+void Voice::initialiseStaticTables()
+{
+    paramIndices();
+}
+
 float Voice::rangeOffset (Dds1Range r) noexcept
 {
     static constexpr float offsets[] = { -36.0f, -24.0f, -12.0f, 0.0f, 12.0f, 24.0f }; // 64'..2'
@@ -60,19 +65,14 @@ float Voice::openLadderCutoff (float hz) noexcept
     if (hz != stretchInput)
     {
         stretchInput = hz;
-        stretchOutput = juce::jmin (openTopHz, kOpenStretchHz * fastExp2 (openExponent * std::log2 (hz / kOpenStretchHz)));
+        stretchOutput = juce::jmin (openTopHz, kOpenStretchHz * fastExp2 (openExponent * (float) fastmath::log2 ((double) (hz / kOpenStretchHz))));
     }
     return stretchOutput;
 }
 
 float Voice::fastExp2 (float x) noexcept
 {
-    x = juce::jlimit (-20.0f, 20.0f, x);
-    const float fl = std::floor (x);
-    const float f = x - fl;
-    const int i = (int) fl;
-    const float poly = 1.0f + f * (0.69314718f + f * (0.24022651f + f * (0.05550411f + f * 0.00961813f)));
-    return std::ldexp (poly, i);
+    return fastmath::exp2 (juce::jlimit (-20.0f, 20.0f, x));
 }
 
 void Voice::prepare (double internalSampleRate, const WaveBank* bank, uint32_t seed)
@@ -170,17 +170,53 @@ bool Voice::isAudible() const noexcept
     return active && getAmpEnvelope().getValue() > 1.0e-3f;
 }
 
+bool Voice::needsStealFade (const StartInfo& info) const noexcept
+{
+    if (! isAudible())
+        return false;
+    // Retriggering the same note with the same placement continues smoothly from the current level.
+    const bool sameSound = info.note == note && juce::exactlyEqual (info.pitchOffset, pitchOffset)
+                        && juce::exactlyEqual (info.detuneSemitones, unisonDetune) && juce::exactlyEqual (info.twinSign, twinSign)
+                        && juce::exactlyEqual (info.gain, voiceGain) && info.side == side;
+    return ! sameSound;
+}
+
 void Voice::start (const StartInfo& info, const LayerSnapshot& p)
 {
-    // A stolen voice that is still sounding keeps its oscillator phases: resetting them in the
-    // middle of a cycle is an audible click. Silent voices restart from the defined phase.
-    const bool keepPhases = isAudible();
+    if (stealPending || needsStealFade (info))
+    {
+        // The new note owns the voice right away (note-offs, voice allocation); the old sound
+        // fades out in render() and begin() runs once it is silent.
+        if (! stealPending)
+            stealGain = 1.0f;
+        stealPending = true;
+        pendingStart = info;
+        note = info.note;
+        midiChannel = juce::jlimit (1, 16, info.midiChannel);
+        age = info.age;
+        gate = true;
+        return;
+    }
+    begin (info, p, false);
+}
+
+void Voice::begin (const StartInfo& info, const LayerSnapshot& p, bool fromSilence)
+{
+    // A retriggered voice that is still sounding keeps its oscillator phases: resetting them in
+    // the middle of a cycle is an audible click. Silent voices restart from the defined phase.
+    if (fromSilence)
+    {
+        env1.reset();
+        env2.reset();
+        fixedEnv.reset();
+    }
+    const bool keepPhases = ! fromSilence && isAudible();
     note = info.note;
     midiChannel = juce::jlimit (1, 16, info.midiChannel);
     velocity = info.velocity;
     aftertouch = 0.0f;
-    midiPitchBend = channelTuning = channelPressure = midiTimbre = 0.0f;
-    midiBendSensitivity = 2.0f;
+    midiPitchBend = channelTuning = channelPressure = midiTimbre = masterBend = 0.0f;
+    midiBendSensitivity = masterBendSensitivity = 2.0f;
     isMpeMember = false;
     pitchOffset = info.pitchOffset;
     twinSign = info.twinSign;
@@ -238,6 +274,20 @@ void Voice::start (const StartInfo& info, const LayerSnapshot& p)
 void Voice::changeNote (int newNote, float newVelocity, bool retrigger, uint64_t newAge, const LayerSnapshot& p,
                         int newMidiChannel)
 {
+    if (stealPending)
+    {
+        // Still fading out the stolen sound: the pending start plays the latest note instead.
+        pendingStart.note = newNote;
+        pendingStart.midiChannel = newMidiChannel;
+        pendingStart.age = newAge;
+        if (retrigger)
+            pendingStart.velocity = newVelocity;
+        note = newNote;
+        midiChannel = juce::jlimit (1, 16, newMidiChannel);
+        age = newAge;
+        gate = true;
+        return;
+    }
     note = newNote;
     midiChannel = juce::jlimit (1, 16, newMidiChannel);
     age = newAge;
@@ -296,6 +346,7 @@ void Voice::curtail() noexcept
 
 void Voice::kill() noexcept
 {
+    stealPending = false;
     active = false;
     gate = false;
     env1.reset();
@@ -531,7 +582,7 @@ void Voice::render (float* outL, float* outR, int startSample, int numSamples, c
                                ? (e.portamento > 0.0f ? 12.0 / ((double) portamentoSecondsPerOctave (e.portamento) * sampleRate) : 1.0e9)
                                : baseGlideRate;
         const double lfo2Hz = lfo2RateModulated
-                            ? rates::lowFrequencyHz (e.lfo2Rate) * std::exp2 (3.0 * e.lfo2RateMod * lfo2Push)
+                            ? rates::lowFrequencyHz (e.lfo2Rate) * fastmath::exp2 (3.0 * e.lfo2RateMod * lfo2Push)
                             : baseLfo2Hz;
         const float l2 = lfo2.process (lfo2Hz, lfo2Shape, rng) * lfo2Ramp.process (e.lfo2Delay) * lfo2Depth;
         lastLfo2 = l2;
@@ -559,7 +610,12 @@ void Voice::render (float* outL, float* outR, int startSample, int numSamples, c
         const float lfo1PitchSt = e.modLfo1 * e.modLfo1 * 12.0f;
         const float env1PitchSt = e.modEnv1 * e.modEnv1 * 48.0f;
         const float lfo2PitchSt = e.lfo2Dds * e.lfo2Dds * 12.0f;
-        const float perfPitch = bendTotal * e.bendDds * (midiBendSensitivity / 2.0f);
+        // MPE: a member channel's bend is the note's exact pitch (bend x its sensitivity in
+        // semitones); BEND DDS scales the conventional bend and the zone master channel's bend.
+        const float perfPitch = isMpeMember
+            ? midiPitchBend * midiBendSensitivity
+                  + ((bendTotal - midiPitchBend) + masterBend * (masterBendSensitivity / 2.0f)) * e.bendDds
+            : bendTotal * e.bendDds * (midiBendSensitivity / 2.0f);
         const float oscMod = l1Mod * lfo1PitchSt + e1 * env1PitchSt;
         const float perfMod = perfPitch + l2 * lfo2PitchSt;
         const double base = currentPitch + (double) ctx.layerPitchOffset + (double) ribbon + (double) channelTuning
@@ -667,10 +723,30 @@ void Voice::render (float* outL, float* outR, int startSample, int numSamples, c
         gain *= juce::jmax (0.0f, 1.0f + e.vcaDds2 * d2);
         gain *= juce::jmax (0.0f, 1.0f + e.lfo2Vca * l2);
 
-        const float out = filtered * gain * kOutputGain * voiceGain;
+        float out = filtered * gain * kOutputGain * voiceGain;
+        bool startPending = false;
+        if (stealPending)
+        {
+            // Raised-cosine fade: no slope corners at either end.
+            stealGain -= (float) (1.0 / (kStealFadeSeconds * sampleRate));
+            out *= stealGain > 0.0f ? (float) (0.5 - 0.5 * fastmath::sin2pi (0.25 + 0.5 * (double) stealGain)) : 0.0f;
+            startPending = stealGain <= 0.0f;
+        }
         outL[i] += out * panL;
         outR[i] += out * panR;
 
+        if (startPending || (stealPending && ! ampEnv.isActive()))
+        {
+            // The old sound is silent: start the new note from zero (a note-off that arrived
+            // during the fade is applied right after).
+            const bool released = ! gate;
+            stealPending = false;
+            begin (pendingStart, p, true);
+            if (released)
+                release();
+            d1s.mirrorDetune = side == Side::right;
+            continue;
+        }
         if (! ampEnv.isActive())
         {
             active = false;

@@ -1,4 +1,5 @@
 #include "Dds2.h"
+#include "FastMath.h"
 
 namespace nsynth
 {
@@ -47,7 +48,7 @@ float Dds2::naive (Dds2Wave wave, double p, float pulseWidth) noexcept
     };
     switch (wave)
     {
-        case Dds2Wave::sine:     return (float) std::sin (juce::MathConstants<double>::twoPi * p);
+        case Dds2Wave::sine:     return (float) fastmath::sin2pi (p);
         case Dds2Wave::saw:      return (float) (2.0 * WaveBank::analogRamp (p) - 1.0);
         case Dds2Wave::square:   return drooping (p, 0.5);
         case Dds2Wave::pulse:    return drooping (p, (double) pulseWidth);

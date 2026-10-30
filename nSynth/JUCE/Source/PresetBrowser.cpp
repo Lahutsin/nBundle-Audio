@@ -1,5 +1,6 @@
 #include "PresetBrowser.h"
 #include "UiPalette.h"
+#include "UiDialogs.h"
 
 using namespace nsynth;
 using namespace nSynth::ui;
@@ -17,6 +18,17 @@ juce::String kindName (PresetKind kind, bool plural = true)
     if (kind == PresetKind::patch)
         return plural ? "patches" : "patch";
     return plural ? "performances" : "performance";
+}
+
+// A file in `directory` (or a sub-folder) with the same content as `file`.
+juce::File findIdenticalFile (const juce::File& directory, const juce::File& file)
+{
+    if (! directory.isDirectory())
+        return {};
+    for (const auto& candidate : directory.findChildFiles (juce::File::findFiles, true, "*" + file.getFileExtension()))
+        if (candidate.hasIdenticalContentTo (file))
+            return candidate;
+    return {};
 }
 
 void drawStar (juce::Graphics& g, juce::Rectangle<float> area, bool filled)
@@ -177,9 +189,17 @@ PresetBrowser::PresetBrowser (NSynthAudioProcessor& processor) : synth (processo
 
     initButton.onClick = [this]
     {
-        synth.initLayer (targetLayer);
-        status.setText ((targetLayer == Layer::upper ? "UPPER" : "LOWER") + juce::String (" reset to the init patch."), juce::dontSendNotification);
-        list.repaint();
+        const auto layer = targetLayer;
+        const juce::String layerName (layer == Layer::upper ? "UPPER" : "LOWER");
+        nSynth::ui::confirmThen (synth.isPatchDirty (layer), messageBox, this, "Init layer",
+                                 layerName + " has unsaved changes. Reset it to the init patch anyway?", "Reset",
+                                 [this, layer, layerName]
+                                 {
+                                     synth.initLayer (layer);
+                                     status.setText (layerName + " reset to the init patch.", juce::dontSendNotification);
+                                     updateCurrentRow();
+                                     list.repaint();
+                                 });
     };
     saveButton.onClick = [this] { if (onSaveRequested) onSaveRequested (kind); };
     importButton.onClick = [this] { importFile(); };
@@ -219,7 +239,7 @@ void PresetBrowser::open (PresetKind newKind, Layer layer)
         category = {};
     synth.getPresetLibrary().ensureScanned();
     updateButtons();
-    rebuild();
+    rebuild (false, true);
     setVisible (true);
     toFront (false);
     syncSelectionToCurrent (true);
@@ -244,7 +264,7 @@ void PresetBrowser::setKind (PresetKind newKind)
     kind = newKind;
     category = {};
     updateButtons();
-    rebuild();
+    rebuild (false, true);
     syncSelectionToCurrent (true);
 }
 
@@ -274,7 +294,7 @@ void PresetBrowser::setSearchText (const juce::String& text)
 void PresetBrowser::refresh()
 {
     synth.getPresetLibrary().rescan();
-    rebuild (true);
+    rebuild (true, true);
     syncSelectionToCurrent (false);
 }
 
@@ -290,11 +310,15 @@ void PresetBrowser::updateButtons()
     resized();
 }
 
-void PresetBrowser::rebuild (bool keepScrollPosition)
+void PresetBrowser::rebuild (bool keepScrollPosition, bool recountCategories)
 {
     const auto scroll = list.getVerticalPosition();
     visible = synth.getPresetLibrary().filter (kind, category, search.getText());
-    categories->rebuild();
+    updateCurrentRow();
+    if (recountCategories)
+        categories->rebuild();
+    else
+        categories->repaint();   // the highlighted category
     {
         const juce::ScopedValueSetter<bool> guard (syncing, true);
         list.deselectAllRows();
@@ -317,20 +341,29 @@ juce::String PresetBrowser::currentKey() const
     return kind == PresetKind::patch ? synth.getPatchKey (targetLayer) : synth.getPerformanceKey();
 }
 
-void PresetBrowser::syncSelectionToCurrent (bool scrollToIt)
+void PresetBrowser::updateCurrentRow()
 {
     const auto key = currentKey();
-    const auto& entries = synth.getPresetLibrary().getEntries();
+    const auto& library = synth.getPresetLibrary();
+    currentRow = -1;
+    if (key.isNotEmpty())
+        for (int row = 0; row < (int) visible.size() && currentRow < 0; ++row)
+            if (library.getKey (visible[(size_t) row]) == key)
+                currentRow = row;
+}
+
+void PresetBrowser::syncSelectionToCurrent (bool scrollToIt)
+{
+    updateCurrentRow();
     const juce::ScopedValueSetter<bool> guard (syncing, true);
-    for (int row = 0; row < (int) visible.size(); ++row)
-        if (key.isNotEmpty() && entries[(size_t) visible[(size_t) row]].key() == key)
-        {
-            list.selectRow (row, ! scrollToIt, true);
-            if (scrollToIt)
-                list.scrollToEnsureRowIsOnscreen (row);
-            return;
-        }
-    list.deselectAllRows();
+    if (currentRow < 0)
+    {
+        list.deselectAllRows();
+        return;
+    }
+    list.selectRow (currentRow, ! scrollToIt, true);
+    if (scrollToIt)
+        list.scrollToEnsureRowIsOnscreen (currentRow);
 }
 
 const nSynth::PresetEntry* PresetBrowser::getVisiblePreset (int row) const
@@ -358,6 +391,7 @@ bool PresetBrowser::loadEntry (const nSynth::PresetEntry& entry)
     {
         status.setText ("Could not load \"" + entry.name + "\": " + error, juce::dontSendNotification);
     }
+    updateCurrentRow();
     list.repaint();
     return ok;
 }
@@ -377,20 +411,28 @@ void PresetBrowser::step (int delta)
 {
     auto& library = synth.getPresetLibrary();
     library.ensureScanned();
-    if (visible.empty() || ! isVisible())
-        visible = library.filter (kind, category, search.getText());
-    if (visible.empty())
+    const auto key = currentKey();
+
+    // Open: the shown list. Closed: the loaded preset's category (everything of the kind when it
+    // did not come from the library), without the search text of the last browse.
+    std::vector<int> categoryList;
+    if (! isVisible())
+    {
+        const auto* current = library.findByKey (key);
+        categoryList = library.filter (kind, current != nullptr ? current->category : juce::String(), {});
+    }
+    const auto& presets = isVisible() ? visible : categoryList;
+    if (presets.empty())
         return;
 
-    const auto key = currentKey();
     int index = -1;
-    for (int row = 0; row < (int) visible.size(); ++row)
-        if (library.getEntries()[(size_t) visible[(size_t) row]].key() == key)
+    for (int row = 0; row < (int) presets.size(); ++row)
+        if (library.getKey (presets[(size_t) row]) == key)
             index = row;
 
-    const int count = (int) visible.size();
+    const int count = (int) presets.size();
     const int next = index < 0 ? (delta > 0 ? 0 : count - 1) : ((index + delta) % count + count) % count;
-    loadRow (next, false);
+    loadEntry (library.getEntries()[(size_t) presets[(size_t) next]]);
     if (isVisible())
         syncSelectionToCurrent (true);
 }
@@ -403,23 +445,43 @@ void PresetBrowser::importFile()
     chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
                           [this, dir] (const juce::FileChooser& fc)
     {
-        auto file = fc.getResult();
+        const auto file = fc.getResult();
         if (file == juce::File())
             return;
-        // Files from elsewhere are copied into the user folder so they stay in the browser.
+        juce::String error;
+        const auto load = [this, &error] (const juce::File& f)
+        {
+            return kind == PresetKind::patch ? synth.loadPatch (targetLayer, f, &error)
+                                             : synth.loadPerformance (f, &error);
+        };
+        // Loading validates the file: nothing is copied unless it loads.
+        if (! load (file))
+        {
+            status.setText ("Import failed: " + error, juce::dontSendNotification);
+            return;
+        }
+
+        // Files from elsewhere are copied into the user folder so they stay in the browser; when
+        // the same file is already there, that one is used instead of a numbered duplicate.
+        juce::String result ("Imported " + file.getFileName());
         if (! file.isAChildOf (dir))
         {
-            dir.createDirectory();
-            const auto copy = dir.getNonexistentChildFile (file.getFileNameWithoutExtension(), file.getFileExtension(), false);
-            if (file.copyFileTo (copy))
-                file = copy;
+            auto copy = findIdenticalFile (dir, file);
+            if (copy == juce::File())
+            {
+                copy = dir.getNonexistentChildFile (file.getFileNameWithoutExtension(), file.getFileExtension(), false);
+                if (dir.createDirectory().failed() || ! file.copyFileTo (copy))
+                {
+                    result << " (loaded, but it could not be copied into " << dir.getFullPathName() << ")";
+                    copy = juce::File();
+                }
+            }
+            // The copy is what the browser lists: load it so it shows as the current preset.
+            if (copy != juce::File())
+                load (copy);
         }
-        juce::String error;
-        const bool ok = kind == PresetKind::patch ? synth.loadPatch (targetLayer, file, &error)
-                                                  : synth.loadPerformance (file, &error);
         refresh();
-        if (! ok)
-            status.setText ("Import failed: " + error, juce::dontSendNotification);
+        status.setText (result, juce::dontSendNotification);
     });
 }
 
@@ -430,8 +492,7 @@ void PresetBrowser::paintListBoxItem (int row, juce::Graphics& g, int width, int
     if (entry == nullptr)
         return;
 
-    const auto key = currentKey();
-    const bool current = key.isNotEmpty() && entry->key() == key;
+    const bool current = row == currentRow;
     auto r = juce::Rectangle<int> (0, 0, width, height);
     if (row % 2 == 1)
     {
@@ -450,7 +511,7 @@ void PresetBrowser::paintListBoxItem (int row, juce::Graphics& g, int width, int
     }
 
     drawStar (g, r.removeFromLeft (kStarWidth).toFloat().withSizeKeepingCentre (13.0f, 13.0f),
-              synth.getPresetLibrary().isFavourite (*entry));
+              synth.getPresetLibrary().isFavourite (visible[(size_t) row]));
 
     r.removeFromRight (10);
     auto right = r.removeFromRight (juce::jmin (220, width / 3));
@@ -491,10 +552,13 @@ void PresetBrowser::listBoxItemClicked (int row, const juce::MouseEvent& e)
     if (e.x < kStarWidth)
     {
         auto& library = synth.getPresetLibrary();
-        library.setFavourite (*entry, ! library.isFavourite (*entry));
+        if (! library.setFavourite (*entry, ! library.isFavourite (visible[(size_t) row])))
+            status.setText ("Could not save the favourites in " + library.getUserDirectory (kind).getParentDirectory().getFullPathName(),
+                            juce::dontSendNotification);
         if (category == PresetLibrary::favouritesCategory)
-            rebuild (true);
-        categories->rebuild();
+            rebuild (true, true);
+        else
+            categories->rebuild();
         list.repaint();
         syncSelectionToCurrent (false);
     }

@@ -7,22 +7,6 @@ namespace
 {
 constexpr int kListColumnGap = 6;
 
-// Sources that swing around a centre: new slots with them start bipolar.
-bool isCentredSource (ModSource source) noexcept
-{
-    return source == ModSource::lfo1 || source == ModSource::lfo2 || source == ModSource::dds2
-        || source == ModSource::perNotePitch || source == ModSource::ribbon;
-}
-
-juce::String destinationSectionTitle (Section section)
-{
-    if (section == Section::ddsMod)      return "Osc Modulation";
-    if (section == Section::vcf)         return "Filter";
-    if (section == Section::vca)         return "Amp";
-    if (section == Section::perfControl) return "LFO 2 / Bend / Glide";
-    return sectionName (section);
-}
-
 void fillDestinationMenu (juce::ComboBox& box)
 {
     // Sections in the order of the SYNTH and FX pages.
@@ -41,7 +25,7 @@ void fillDestinationMenu (juce::ComboBox& box)
             if (specs[(size_t) i].section == section && ModMatrix::isModulatable (i))
                 sub.addItem (i + 1, specs[(size_t) i].name);
         if (sub.getNumItems() > 0)
-            root->addSubMenu (destinationSectionTitle (section), sub);
+            root->addSubMenu (SectionPanel::titleFor (section), sub);
     }
 }
 
@@ -94,6 +78,14 @@ juce::Point<float> MsegEditor::handlePosition (int segmentEnd) const noexcept
     return toScreen (0.5f * (a.x + b.x), a.y + (b.y - a.y) * MsegShape::bend (0.5f, b.curve));
 }
 
+juce::Point<float> MsegEditor::snapped (juce::Point<float> v, const juce::ModifierKeys& mods) const noexcept
+{
+    // Shift inverts the SNAP setting.
+    if (snap == mods.isShiftDown())
+        return v;
+    return { std::round (v.x * kGridX) / kGridX, std::round (v.y * kGridY) / kGridY };
+}
+
 int MsegEditor::pointAt (juce::Point<float> p) const noexcept
 {
     for (int i = shape.count - 1; i >= 0; --i)
@@ -117,29 +109,67 @@ int MsegEditor::handleAt (juce::Point<float> p) const noexcept
 void MsegEditor::store()
 {
     engine.modMatrix (layer).setMseg (index, shape);
+    shapeCacheValid = false;
     repaint();
+}
+
+juce::Rectangle<int> MsegEditor::playheadArea (float phase) const noexcept
+{
+    if (phase < 0.0f)
+        return {};
+    // The line and the dot (7 px) on it, with a margin for anti-aliasing.
+    const auto a = plotArea();
+    const float x = toScreen (phase, 0.0f).x;
+    return juce::Rectangle<float> (x - 6.0f, a.getY() - 6.0f, 12.0f, a.getHeight() + 12.0f).getSmallestIntegerContainer();
 }
 
 void MsegEditor::refresh()
 {
-    bool dirty = false;
     if (dragPoint < 0 && dragHandle < 0)
     {
         const auto current = engine.modMatrix (layer).getMseg (index);
         if (! (current == shape))
         {
             shape = current;
-            dirty = true;
+            shapeCacheValid = false;
+            lastPhase = engine.layer (layer).getMsegPosition (index);
+            repaint();
+            return;
         }
     }
     const float phase = engine.layer (layer).getMsegPosition (index);
     if (std::abs (phase - lastPhase) > 1.0e-4f)
     {
+        repaint (playheadArea (lastPhase));
         lastPhase = phase;
-        dirty = true;
+        repaint (playheadArea (lastPhase));
     }
-    if (dirty)
-        repaint();
+}
+
+void MsegEditor::rebuildShapeCache()
+{
+    // The shape, sampled every few pixels per segment.
+    const auto a = plotArea();
+    juce::Path line;
+    line.startNewSubPath (toScreen (shape.points[0].x, shape.points[0].y));
+    for (int i = 1; i < shape.count; ++i)
+    {
+        const auto& p0 = shape.points[(size_t) i - 1];
+        const auto& p1 = shape.points[(size_t) i];
+        const int steps = juce::jmax (1, (int) ((p1.x - p0.x) * a.getWidth() / 3.0f));
+        for (int k = 1; k <= steps; ++k)
+        {
+            const float t = (float) k / (float) steps;
+            line.lineTo (toScreen (p0.x + (p1.x - p0.x) * t, p0.y + (p1.y - p0.y) * MsegShape::bend (t, p1.curve)));
+        }
+    }
+    shapeFill = line;
+    shapeFill.lineTo (a.getBottomRight());
+    shapeFill.lineTo (a.getBottomLeft());
+    shapeFill.closeSubPath();
+    shapeStroke.clear();
+    juce::PathStrokeType (2.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded).createStrokedPath (shapeStroke, line);
+    shapeCacheValid = true;
 }
 
 void MsegEditor::paint (juce::Graphics& g)
@@ -164,28 +194,12 @@ void MsegEditor::paint (juce::Graphics& g)
         g.drawHorizontalLine (juce::roundToInt (y), a.getX(), a.getRight());
     }
 
-    // The shape, sampled every few pixels per segment.
-    juce::Path line;
-    line.startNewSubPath (toScreen (shape.points[0].x, shape.points[0].y));
-    for (int i = 1; i < shape.count; ++i)
-    {
-        const auto& p0 = shape.points[(size_t) i - 1];
-        const auto& p1 = shape.points[(size_t) i];
-        const int steps = juce::jmax (1, (int) ((p1.x - p0.x) * a.getWidth() / 3.0f));
-        for (int k = 1; k <= steps; ++k)
-        {
-            const float t = (float) k / (float) steps;
-            line.lineTo (toScreen (p0.x + (p1.x - p0.x) * t, p0.y + (p1.y - p0.y) * MsegShape::bend (t, p1.curve)));
-        }
-    }
-    juce::Path fill (line);
-    fill.lineTo (a.getBottomRight());
-    fill.lineTo (a.getBottomLeft());
-    fill.closeSubPath();
+    if (! shapeCacheValid)
+        rebuildShapeCache();
     g.setGradientFill (juce::ColourGradient (accent.withAlpha (0.28f), a.getX(), a.getY(), accent.withAlpha (0.03f), a.getX(), a.getBottom(), false));
-    g.fillPath (fill);
+    g.fillPath (shapeFill);
     g.setColour (accent);
-    g.strokePath (line, juce::PathStrokeType (2.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+    g.fillPath (shapeStroke);
 
     // Play position of the newest voice.
     if (lastPhase >= 0.0f)
@@ -259,12 +273,7 @@ void MsegEditor::mouseDown (const juce::MouseEvent& event)
         return;
 
     // A new point on the clicked position, inserted in x order.
-    auto v = fromScreen (event.position);
-    if (snap != event.mods.isShiftDown())
-    {
-        v.x = std::round (v.x * kGridX) / kGridX;
-        v.y = std::round (v.y * kGridY) / kGridY;
-    }
+    const auto v = snapped (fromScreen (event.position), event.mods);
     int insert = 1;
     while (insert < shape.count - 1 && shape.points[(size_t) insert].x <= v.x)
         ++insert;
@@ -280,12 +289,7 @@ void MsegEditor::mouseDrag (const juce::MouseEvent& event)
 {
     if (dragPoint >= 0)
     {
-        auto v = fromScreen (event.position);
-        if (snap != event.mods.isShiftDown())
-        {
-            v.x = std::round (v.x * kGridX) / kGridX;
-            v.y = std::round (v.y * kGridY) / kGridY;
-        }
+        auto v = snapped (fromScreen (event.position), event.mods);
         auto& p = shape.points[(size_t) dragPoint];
         if (dragPoint == 0 || dragPoint == shape.count - 1)
             v.x = p.x;   // the ends stay at 0 and 1
@@ -338,6 +342,8 @@ MsegPanel::MsegPanel (SynthEngine& e, Layer l, int i, juce::Colour a, const Cont
     : engine (e), layer (l), index (i), accent (a), editor (e, l, i, a),
       chip (i == 0 ? ModSource::mseg1 : ModSource::mseg2, a)
 {
+    // A click on the panel or the curve takes the keyboard focus away from the last knob.
+    setWantsKeyboardFocus (true);
     const std::array<const char*, 4> suffixes = i == 0 ? std::array<const char*, 4> { pid::mseg1Mode, pid::mseg1Sync, pid::mseg1Time, pid::mseg1Division }
                                   : std::array<const char*, 4> { pid::mseg2Mode, pid::mseg2Sync, pid::mseg2Time, pid::mseg2Division };
     for (auto* suffix : suffixes)
@@ -553,15 +559,9 @@ void ModSlotList::itemDropped (const SourceDetails& details)
 
 void ModSlotList::addSlotWithSource (ModSource source)
 {
-    for (int i = 0; i < ModMatrixData::kMaxSlots; ++i)
-    {
-        const auto slot = matrix.getSlot (i);
-        if (slot.source < 0 && slot.destination < 0)
-        {
-            matrix.setSlot (i, { (int) source, -1, 0.5f, 0.0f, isCentredSource (source) });
-            return;
-        }
-    }
+    const int slot = ModulationHost::findEmptySlot (matrix);
+    if (slot >= 0)
+        matrix.setSlot (slot, { (int) source, -1, 0.5f, 0.0f, ModulationHost::isCentredSource (source) });
 }
 
 void ModSlotList::refresh (const juce::StringArray& macroNames)
@@ -614,6 +614,7 @@ ModPage::ModPage (SynthEngine& e, Layer l, juce::Colour a, const ControlFactory&
                   const SwitchedCellRegistrar& registerSwitched)
     : engine (e), layer (l), accent (a), slotList (e.modMatrix (l), a)
 {
+    setWantsKeyboardFocus (true);
     for (int m = 0; m < 2; ++m)
     {
         msegs[(size_t) m] = std::make_unique<MsegPanel> (e, l, m, a, makeControl, registerSwitched);
@@ -641,15 +642,10 @@ ModPage::ModPage (SynthEngine& e, Layer l, juce::Colour a, const ControlFactory&
     addButton.setTooltip ("Add an empty modulation slot");
     addButton.onClick = [this]
     {
-        for (int i = 0; i < ModMatrixData::kMaxSlots; ++i)
-        {
-            const auto slot = engine.modMatrix (layer).getSlot (i);
-            if (slot.source < 0 && slot.destination < 0)
-            {
-                engine.modMatrix (layer).setSlot (i, { (int) ModSource::env1, -1, 0.5f, 0.0f, false });
-                return;
-            }
-        }
+        auto& matrix = engine.modMatrix (layer);
+        const int slot = ModulationHost::findEmptySlot (matrix);
+        if (slot >= 0)
+            matrix.setSlot (slot, { (int) ModSource::env1, -1, 0.5f, 0.0f, false });
     };
     clearButton.setTooltip ("Remove every modulation slot of this layer");
     clearButton.onClick = [this]

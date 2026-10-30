@@ -64,6 +64,11 @@ public:
     // resampled to kTableSize, DC-removed and peak-normalised.
     static bool readAudioCycle (const juce::File& file, std::vector<float>& cycleOut, juce::String* error = nullptr);
     juce::ValueTree toValueTree() const;
+    // Hash of the alternative waveforms as toValueTree() stores them: equal hashes = same saved content.
+    uint64_t getContentHash() const noexcept;
+    bool hasFactoryContent() const noexcept { return getContentHash() == factory()->getContentHash(); }
+    // The shared bank with the built-in waveforms (built once, on first use).
+    static std::shared_ptr<const WaveBank> factory();
     static bool isValidValueTree (const juce::ValueTree& state, juce::String* error = nullptr);
     bool restoreFromValueTree (const juce::ValueTree& state, juce::String* error = nullptr);
 
@@ -83,6 +88,7 @@ private:
     std::array<MipWavetable, 4> classicTables;
     std::array<MipWavetable, kNumAltWaves> altTables;
     std::array<std::vector<float>, kNumAltWaves> altCycles;
+    std::array<uint64_t, kNumAltWaves> altHashes {};
 };
 
 using WaveBankPtr = std::shared_ptr<const WaveBank>;

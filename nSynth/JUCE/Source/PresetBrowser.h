@@ -24,7 +24,8 @@ public:
     nsynth::Layer getTargetLayer() const noexcept { return targetLayer; }
     void setTargetLayer (nsynth::Layer layer);
 
-    // Loads the previous / next preset of the current list (also used while the browser is closed).
+    // Loads the previous / next preset of the shown list; while the browser is closed, of the
+    // loaded preset's category (without the search text).
     void step (int delta);
     // Rescans the user folders and rebuilds the lists.
     void refresh();
@@ -70,8 +71,10 @@ private:
     void textEditorEscapeKeyPressed (juce::TextEditor&) override;
 
     juce::Rectangle<int> getPanelBounds() const;
-    void rebuild (bool keepScrollPosition = false);
+    // Filters the list again; the category counts only change with the kind, a rescan or a favourite.
+    void rebuild (bool keepScrollPosition = false, bool recountCategories = false);
     void syncSelectionToCurrent (bool scrollToIt);
+    void updateCurrentRow();
     juce::String currentKey() const;
     bool loadEntry (const nSynth::PresetEntry& entry);
     void updateButtons();
@@ -83,6 +86,7 @@ private:
     nsynth::Layer targetLayer { nsynth::Layer::upper };
     juce::String category;
     std::vector<int> visible;
+    int currentRow { -1 };   // row of the loaded preset in `visible`
     bool syncing { false };
 
     juce::TextButton patchesTab { "PATCHES" }, performancesTab { "PERFORMANCES" };
@@ -96,6 +100,7 @@ private:
     juce::TextButton initButton { "INIT LAYER" }, saveButton { "SAVE AS..." }, importButton { "IMPORT..." },
                      folderButton { "OPEN FOLDER" }, refreshButton { "RESCAN" };
     std::unique_ptr<juce::FileChooser> chooser;
+    juce::ScopedMessageBox messageBox;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PresetBrowser)
 };

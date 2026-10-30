@@ -246,25 +246,25 @@ public:
             for (int n = 0; n < MipWavetable::kTableSize; ++n)
                 cycle[(size_t) n] = (float) std::sin (juce::MathConstants<double>::twoPi * n / MipWavetable::kTableSize);
             expect (WaveBank::writeWs6 (file, cycle, &error), error);
-            expect (engine.requestWaveImport (3, file, &error), error);
+            expect (engine.requestWaveImport (Layer::upper, 3, file, &error), error);
             expect (pumpImport(), engine.getWaveImportError());
             expect (processor.savePatch (Layer::upper, patch, &error), error);
 
             for (int n = 0; n < MipWavetable::kTableSize; ++n)
                 cycle[(size_t) n] = (float) std::sin (juce::MathConstants<double>::twoPi * 2.0 * n / MipWavetable::kTableSize);
             expect (WaveBank::writeWs6 (file, cycle, &error), error);
-            expect (engine.requestWaveImport (3, file, &error), error);
+            expect (engine.requestWaveImport (Layer::upper, 3, file, &error), error);
             expect (pumpImport(), engine.getWaveImportError());
             expect (processor.isPatchDirty (Layer::upper));
 
             expect (processor.setPatchCompare (Layer::upper, true));
             expect (pumpImport(), engine.getWaveImportError());
             expect (! processor.isPatchDirty (Layer::upper));
-            expectWithinAbsoluteError (engine.getWaveBank().alt (3).read (0, 0.25), 1.0f, 0.01f);
+            expectWithinAbsoluteError (engine.getWaveBank (Layer::upper)->alt (3).read (0, 0.25), 1.0f, 0.01f);
             expect (processor.setPatchCompare (Layer::upper, false));
             expect (pumpImport(), engine.getWaveImportError());
             expect (processor.isPatchDirty (Layer::upper));
-            expectWithinAbsoluteError (engine.getWaveBank().alt (3).read (0, 0.25),
+            expectWithinAbsoluteError (engine.getWaveBank (Layer::upper)->alt (3).read (0, 0.25),
                                       0.0f, 0.01f);
             file.deleteFile();
             patch.deleteFile();

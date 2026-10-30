@@ -57,6 +57,7 @@ set(NSYNTH_CORE_SOURCES
   Source/Core/Engine/Voice.h
   Source/Core/Engine/Voice.cpp
   Source/Core/Engine/VoiceRenderPool.h
+  Source/Core/Engine/RealtimeHandoff.h
   Source/Core/Engine/VoiceRenderPool.cpp
   Source/Core/Engine/ModMatrix.h
   Source/Core/Engine/ModMatrix.cpp
@@ -115,7 +116,14 @@ target_sources(nSynth PRIVATE
   Source/PluginProcessor.cpp
   Source/PluginEditor.h
   Source/PluginEditor.cpp
+  Source/NSynthLookAndFeel.h
+  Source/NSynthLookAndFeel.cpp
   Source/EditorComponents.h
+  Source/EditorComponents.cpp
+  Source/PresetDisplay.h
+  Source/PresetDisplay.cpp
+  Source/WaveBrowserPage.h
+  Source/WaveBrowserPage.cpp
   Source/ModulationUi.h
   Source/ModulationUi.cpp
   Source/FxPage.h
@@ -123,6 +131,7 @@ target_sources(nSynth PRIVATE
   Source/PresetBrowser.h
   Source/PresetBrowser.cpp
   Source/UiPalette.h
+  Source/UiDialogs.h
 )
 
 target_include_directories(nSynth PRIVATE Source)
@@ -145,7 +154,14 @@ function(nsynth_add_engine_tool target source_file)
     Source/PluginProcessor.cpp
     Source/PluginEditor.h
     Source/PluginEditor.cpp
+    Source/NSynthLookAndFeel.h
+    Source/NSynthLookAndFeel.cpp
     Source/EditorComponents.h
+    Source/EditorComponents.cpp
+    Source/PresetDisplay.h
+    Source/PresetDisplay.cpp
+    Source/WaveBrowserPage.h
+    Source/WaveBrowserPage.cpp
     Source/ModulationUi.h
     Source/ModulationUi.cpp
     Source/FxPage.h
@@ -153,6 +169,7 @@ function(nsynth_add_engine_tool target source_file)
     Source/PresetBrowser.h
     Source/PresetBrowser.cpp
     Source/UiPalette.h
+    Source/UiDialogs.h
     ${source_file}
   )
   target_include_directories(${target} PRIVATE Source)
@@ -181,7 +198,14 @@ if(NSYNTH_BUILD_TESTS)
     Source/PluginProcessor.cpp
     Source/PluginEditor.h
     Source/PluginEditor.cpp
+    Source/NSynthLookAndFeel.h
+    Source/NSynthLookAndFeel.cpp
     Source/EditorComponents.h
+    Source/EditorComponents.cpp
+    Source/PresetDisplay.h
+    Source/PresetDisplay.cpp
+    Source/WaveBrowserPage.h
+    Source/WaveBrowserPage.cpp
     Source/ModulationUi.h
     Source/ModulationUi.cpp
     Source/FxPage.h
@@ -189,6 +213,7 @@ if(NSYNTH_BUILD_TESTS)
     Source/PresetBrowser.h
     Source/PresetBrowser.cpp
     Source/UiPalette.h
+    Source/UiDialogs.h
     Source/Tests/TestHelpers.h
     Source/Tests/TestMain.cpp
     Source/Tests/ParamTests.cpp
@@ -202,8 +227,10 @@ if(NSYNTH_BUILD_TESTS)
     Source/Tests/ModMatrixTests.cpp
     Source/Tests/MidiInputTests.cpp
     Source/Tests/PluginTests.cpp
+    Source/Tests/EditorTests.cpp
     Source/Tests/FactoryPresetTests.cpp
     Source/Tests/ModulationFxTests.cpp
+    Source/Tests/RealtimeSafetyTests.cpp
   )
 
   target_include_directories(nSynthTests PRIVATE Source)

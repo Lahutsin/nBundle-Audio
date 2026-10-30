@@ -5,20 +5,7 @@
 #include "Core/Params/ParamRegistry.h"
 #include "Core/Engine/ModMatrix.h"
 #include "UiPalette.h"
-
-class NSynthLookAndFeel : public juce::LookAndFeel_V4
-{
-public:
-    NSynthLookAndFeel();
-    void drawRotarySlider (juce::Graphics&, int x, int y, int w, int h, float pos, float start, float end, juce::Slider&) override;
-    void drawLinearSlider (juce::Graphics&, int x, int y, int w, int h, float pos, float minPos, float maxPos,
-                           juce::Slider::SliderStyle, juce::Slider&) override;
-    juce::Font getComboBoxFont (juce::ComboBox&) override { return juce::Font (juce::FontOptions (11.5f)); }
-    void drawButtonText (juce::Graphics&, juce::TextButton&, bool shouldDrawButtonAsHighlighted, bool shouldDrawButtonAsDown) override;
-    juce::Label* createSliderTextBox (juce::Slider& s) override;
-
-    static juce::Colour accentFor (const juce::Component&);
-};
+#include "NSynthLookAndFeel.h"
 
 // What a knob needs from the editor to take part in modulation: the right-click menu entries,
 // drag-and-drop of a source chip onto it, and whether its parameter can be modulated at all.
@@ -36,18 +23,25 @@ public:
     static juce::String dragDescription (nsynth::ModSource source) { return "modsrc:" + juce::String ((int) source); }
     // The source of a chip being dragged, or ModSource::count for anything else.
     static nsynth::ModSource sourceFromDrag (const juce::var& description);
+    // LFO-like sources swing around a centre: new routes with them start bipolar.
+    static bool isCentredSource (nsynth::ModSource source) noexcept;
+    // Display name of a slot source (macros by their editable names).
+    static juce::String sourceName (const nsynth::ModMatrix& matrix, int source);
+    // First slot with neither source nor destination, -1 when all are used.
+    static int findEmptySlot (const nsynth::ModMatrix& matrix) noexcept;
 };
 
 // One parameter control (rotary, fader, combo or toggle) with its caption and host attachment.
 // Rotary controls of modulated parameters draw a modulation ring (range and live value).
+// Knobs and faders take the keyboard focus when clicked: arrow keys step them, page keys jump.
 class ParamControl : public juce::Component,
                      public juce::SettableTooltipClient,
-                     public juce::DragAndDropTarget,
-                     private juce::Timer
+                     public juce::DragAndDropTarget
 {
 public:
     ParamControl (juce::AudioProcessorValueTreeState& state, const juce::String& paramId,
                   const nsynth::ParamSpec& spec, juce::Colour accent, const juce::String& captionOverride = {});
+    ~ParamControl() override;
     void resized() override;
     void paintOverChildren (juce::Graphics&) override;
     const juce::String& getParamId() const noexcept { return paramId; }
@@ -55,7 +49,13 @@ public:
     juce::Slider* getSlider() noexcept { return slider.get(); }
     void setMidiLearnHandlers (std::function<bool()> learn, std::function<void()> clear,
                                std::function<int()> assignedCC);
-    void mouseDown (const juce::MouseEvent& event) override;
+    // Called by the editor while the control is shown: segment buttons follow the parameter, the
+    // caption follows its name source, and the MIDI CC is looked up again only when the learn
+    // generation changed since the last call.
+    void refresh (uint32_t midiLearnGeneration);
+    // Right-click / ctrl-click menu: MIDI learn and modulation.
+    void showContextMenu();
+    bool keyPressed (const juce::KeyPress&) override;
 
     // Layer parameter this control edits (index in getLayerParamSpecs()); -1 for performance parameters.
     void setModulationTarget (ModulationHost* host, nsynth::Layer layer, int parameterIndex);
@@ -74,12 +74,29 @@ public:
     void itemDragExit (const SourceDetails&) override { dragHover = false; repaint(); }
     void itemDropped (const SourceDetails&) override;
 
+    static constexpr int kChoiceRadioGroup = 1;
+
 private:
-    void timerCallback() override;
+    // Listens to the control and all its children, so each click reaches it exactly once.
+    struct ContextMenuTrigger final : public juce::MouseListener
+    {
+        explicit ContextMenuTrigger (ParamControl& c) : owner (c) {}
+        void mouseDown (const juce::MouseEvent& event) override;
+        ParamControl& owner;
+    };
+
+    void updateCaption();
+    void setValueAsGesture (float newValue);
+
     juce::String paramId;
-    juce::String captionText;
+    juce::RangedAudioParameter& parameter;
+    juce::String captionText, baseTooltip;
     juce::Label caption;
+    ContextMenuTrigger contextMenuTrigger { *this };
     bool captionVisible { true };
+    int shownMidiCC { -1 };
+    uint32_t shownMidiLearnGeneration { 0 };
+    bool midiLearnShown { false };
     std::function<bool()> learnMidiCC;
     std::function<void()> clearMidiCC;
     std::function<int()> getAssignedMidiCC;
@@ -130,7 +147,8 @@ class SectionPanel : public juce::Component
 public:
     SectionPanel (juce::String title, juce::Colour accent, int columns);
     void add (std::unique_ptr<ParamControl> control, bool sharesPreviousCell = false);
-    void addHeaderComponent (std::unique_ptr<juce::Component> component);
+    // Source chips take their preferred width, other components `width`.
+    void addHeaderComponent (std::unique_ptr<juce::Component> component, int width = kHeaderComponentWidth);
     int getColumns() const noexcept { return columns; }
     void setColumns (int newColumns) { columns = juce::jmax (1, newColumns); resized(); }
     const std::vector<std::unique_ptr<ParamControl>>& getControls() const noexcept { return controls; }
@@ -138,8 +156,11 @@ public:
     void resized() override;
 
     static constexpr int kTitleHeight = 17;
+    static constexpr int kHeaderComponentWidth = 60;
     // The panel look shared by every framed box of the editor.
     static void paintFrame (juce::Graphics&, juce::Rectangle<int> bounds, juce::Colour accent, const juce::String& title);
+    // Panel title of a parameter section (some sections read better under another name).
+    static juce::String titleFor (nsynth::Section section);
 
 protected:
     juce::String title;
@@ -148,4 +169,5 @@ protected:
     std::vector<std::unique_ptr<ParamControl>> controls;
     std::vector<std::vector<ParamControl*>> cells;
     std::vector<std::unique_ptr<juce::Component>> headerComponents;
+    std::vector<int> headerWidths;
 };

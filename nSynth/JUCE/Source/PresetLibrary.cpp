@@ -100,10 +100,20 @@ void PresetLibrary::rescan()
         }
         return a.name.compareNatural (b.name) < 0;
     });
+
+    keys.clear();
+    keys.reserve (entries.size());
+    for (const auto& e : entries)
+        keys.push_back (e.key());
+    updateFavouriteFlags();
 }
 
-void PresetLibrary::addFactoryEntries()
+const std::vector<PresetEntry>& PresetLibrary::getFactoryEntries()
 {
+    // Factory content is compiled in: it is indexed once per process, in its musical order.
+    static const std::vector<PresetEntry> factory = []
+    {
+    std::vector<PresetEntry> entries;
     for (int i = 0; i < NSynthPresetData::namedResourceListSize; ++i)
     {
         const juce::String fileName (NSynthPresetData::originalFilenames[i]);
@@ -133,7 +143,30 @@ void PresetLibrary::addFactoryEntries()
         entry.order = stem.initialSectionContainingOnly ("0123456789").getIntValue();
         entries.push_back (std::move (entry));
     }
+    std::stable_sort (entries.begin(), entries.end(), [] (const PresetEntry& a, const PresetEntry& b)
+    {
+        if (a.kind != b.kind)
+            return a.kind == PresetKind::patch;
+        const int ra = categoryRank (a.category), rb = categoryRank (b.category);
+        if (ra != rb)
+            return ra < rb;
+        if (a.category != b.category)
+            return a.category.compareIgnoreCase (b.category) < 0;
+        if (a.order != b.order)
+            return a.order < b.order;
+        return a.name.compareNatural (b.name) < 0;
+    });
+    return entries;
+    }();
+    return factory;
 }
+
+void PresetLibrary::addFactoryEntries()
+{
+    const auto& factory = getFactoryEntries();
+    entries.insert (entries.end(), factory.begin(), factory.end());
+}
+
 
 void PresetLibrary::addUserEntries (PresetKind kind)
 {
@@ -169,6 +202,20 @@ juce::StringArray PresetLibrary::getCategories (PresetKind kind)
     return factory;
 }
 
+bool PresetLibrary::matches (const PresetEntry& e, size_t index, PresetKind kind, const juce::String& category,
+                             const juce::StringArray& words) const
+{
+    if (e.kind != kind)
+        return false;
+    if (category == favouritesCategory && ! favouriteFlags[index])
+        return false;
+    if (category == userCategory && e.factory)
+        return false;
+    if (category.isNotEmpty() && category != favouritesCategory && category != userCategory && e.category != category)
+        return false;
+    return matchesSearch (e, words);
+}
+
 std::vector<int> PresetLibrary::filter (PresetKind kind, const juce::String& category, const juce::String& search)
 {
     ensureScanned();
@@ -177,45 +224,56 @@ std::vector<int> PresetLibrary::filter (PresetKind kind, const juce::String& cat
     words.removeEmptyStrings();
 
     std::vector<int> result;
-    for (int i = 0; i < (int) entries.size(); ++i)
-    {
-        const auto& e = entries[(size_t) i];
-        if (e.kind != kind)
-            continue;
-        if (category == favouritesCategory && ! isFavourite (e))
-            continue;
-        if (category == userCategory && e.factory)
-            continue;
-        if (category.isNotEmpty() && category != favouritesCategory && category != userCategory && e.category != category)
-            continue;
-        if (! matchesSearch (e, words))
-            continue;
-        result.push_back (i);
-    }
+    for (size_t i = 0; i < entries.size(); ++i)
+        if (matches (entries[i], i, kind, category, words))
+            result.push_back ((int) i);
     return result;
 }
 
 int PresetLibrary::count (PresetKind kind, const juce::String& category)
 {
-    return (int) filter (kind, category, {}).size();
+    ensureScanned();
+    int n = 0;
+    for (size_t i = 0; i < entries.size(); ++i)
+        n += matches (entries[i], i, kind, category, {}) ? 1 : 0;
+    return n;
 }
 
 const PresetEntry* PresetLibrary::findByKey (const juce::String& key)
 {
     ensureScanned();
-    for (const auto& e : entries)
-        if (e.key() == key)
-            return &e;
+    for (size_t i = 0; i < entries.size(); ++i)
+        if (keys[i] == key)
+            return &entries[i];
     return nullptr;
 }
 
-void PresetLibrary::setFavourite (const PresetEntry& entry, bool shouldBeFavourite)
+juce::String PresetLibrary::favouriteKey (const PresetEntry& entry) const
 {
+    if (entry.factory || ! entry.file.isAChildOf (userRoot))
+        return entry.key();
+    return juce::String ("user/") + (entry.kind == PresetKind::patch ? "patch" : "perf") + "/"
+         + entry.file.getRelativePathFrom (userRoot).replaceCharacter ('\\', '/');
+}
+
+bool PresetLibrary::setFavourite (const PresetEntry& entry, bool shouldBeFavourite)
+{
+    // Merge with what other instances saved since our last read, then change only this entry.
+    loadFavourites();
+    const auto key = favouriteKey (entry);
     if (shouldBeFavourite)
-        favourites.addIfNotAlreadyThere (entry.key());
+        favourites.addIfNotAlreadyThere (key);
     else
-        favourites.removeString (entry.key());
-    saveFavourites();
+        favourites.removeString (key);
+    updateFavouriteFlags();
+    return saveFavourites();
+}
+
+void PresetLibrary::updateFavouriteFlags()
+{
+    favouriteFlags.assign (entries.size(), false);
+    for (size_t i = 0; i < entries.size(); ++i)
+        favouriteFlags[i] = favourites.contains (favouriteKey (entries[i]));
 }
 
 void PresetLibrary::loadFavourites()
@@ -223,15 +281,29 @@ void PresetLibrary::loadFavourites()
     favourites.clear();
     if (auto xml = juce::XmlDocument::parse (userRoot.getChildFile ("Favourites.xml")))
         for (auto* item : xml->getChildWithTagNameIterator ("ITEM"))
-            favourites.addIfNotAlreadyThere (item->getStringAttribute ("key"));
+        {
+            auto key = item->getStringAttribute ("key");
+            // Older versions stored user presets by absolute path ("user/patch//Users/...").
+            if (key.startsWith ("user/"))
+            {
+                const auto prefix = "user/" + key.substring (5).upToFirstOccurrenceOf ("/", true, false);
+                const auto path = key.substring (prefix.length());
+                if (juce::File::isAbsolutePath (path) && juce::File (path).isAChildOf (userRoot))
+                    key = prefix + juce::File (path).getRelativePathFrom (userRoot).replaceCharacter ('\\', '/');
+            }
+            favourites.addIfNotAlreadyThere (key);
+        }
 }
 
-void PresetLibrary::saveFavourites() const
+bool PresetLibrary::saveFavourites() const
 {
     juce::XmlElement xml ("FAVOURITES");
     for (const auto& key : favourites)
         xml.createNewChildElement ("ITEM")->setAttribute ("key", key);
-    userRoot.createDirectory();
-    xml.writeTo (userRoot.getChildFile ("Favourites.xml"));
+    if (! userRoot.createDirectory())
+        return false;
+    // Written next to the target and moved over it, so a reader never sees a half-written file.
+    juce::TemporaryFile temp (userRoot.getChildFile ("Favourites.xml"));
+    return xml.writeTo (temp.getFile()) && temp.overwriteTargetFileWithTemporary();
 }
 } // namespace nSynth

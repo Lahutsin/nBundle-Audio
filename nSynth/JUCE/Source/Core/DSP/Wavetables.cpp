@@ -10,6 +10,30 @@ constexpr int N = MipWavetable::kTableSize;
 constexpr int kFftOrder = 12;
 static_assert ((1 << kFftOrder) == N);
 
+// One alternative cycle as it is saved: peak-normalised 16-bit PCM.
+void quantiseCycle (const std::vector<float>& cycle, int16_t* out) noexcept
+{
+    float peak = 0.0f;
+    for (auto value : cycle)
+        peak = juce::jmax (peak, std::abs (value));
+    const float gain = peak > 1.0e-8f ? 1.0f / peak : 1.0f;
+    for (int sample = 0; sample < N; ++sample)
+        out[sample] = (int16_t) juce::jlimit (-32768, 32767, (int) std::lround (cycle[(size_t) sample] * gain * 32767.0f));
+}
+
+uint64_t hashCycle (const std::vector<float>& cycle) noexcept
+{
+    std::array<int16_t, N> pcm {};
+    quantiseCycle (cycle, pcm.data());
+    uint64_t hash = 14695981039346656037ull; // FNV-1a
+    for (auto value : pcm)
+    {
+        hash ^= (uint16_t) value;
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
+
 void inverseToTable (const std::vector<std::complex<float>>& harmonics, int maxHarmonic, std::vector<float>& out)
 {
     juce::dsp::FFT fft (kFftOrder);
@@ -252,6 +276,21 @@ void WaveBank::setAltCycle (int index, const float* cycle)
     jassert (juce::isPositiveAndBelow (index, kNumAltWaves));
     altTables[(size_t) index].buildFromCycle (cycle, kAltMaxHarmonic, true);
     altCycles[(size_t) index].assign (cycle, cycle + N);
+    altHashes[(size_t) index] = hashCycle (altCycles[(size_t) index]);
+}
+
+uint64_t WaveBank::getContentHash() const noexcept
+{
+    uint64_t hash = 0;
+    for (auto slotHash : altHashes)
+        hash = (hash ^ slotHash) * 0x100000001b3ull + 0x9e3779b97f4a7c15ull;
+    return hash;
+}
+
+std::shared_ptr<const WaveBank> WaveBank::factory()
+{
+    static const std::shared_ptr<const WaveBank> bank = std::make_shared<const WaveBank>();
+    return bank;
 }
 
 bool WaveBank::readWs6 (const juce::File& file, std::vector<float>& cycleOut, juce::String* error)
@@ -409,19 +448,15 @@ juce::ValueTree WaveBank::toValueTree() const
 {
     juce::MemoryBlock cycles ((size_t) kNumAltWaves * (size_t) N * 2);
     auto* bytes = static_cast<uint8_t*> (cycles.getData());
+    std::array<int16_t, N> pcm {};
     for (int wave = 0; wave < kNumAltWaves; ++wave)
     {
-        float peak = 0.0f;
-        for (auto value : altCycles[(size_t) wave])
-            peak = juce::jmax (peak, std::abs (value));
-        const float gain = peak > 1.0e-8f ? 1.0f / peak : 1.0f;
+        quantiseCycle (altCycles[(size_t) wave], pcm.data());
         for (int sample = 0; sample < N; ++sample)
         {
-            const float value = altCycles[(size_t) wave][(size_t) sample] * gain;
-            const auto pcm = (int16_t) juce::jlimit (-32768, 32767, (int) std::lround (value * 32767.0f));
             const size_t offset = ((size_t) wave * (size_t) N + (size_t) sample) * 2;
-            bytes[offset] = (uint8_t) ((uint16_t) pcm & 0xff);
-            bytes[offset + 1] = (uint8_t) (((uint16_t) pcm >> 8) & 0xff);
+            bytes[offset] = (uint8_t) ((uint16_t) pcm[(size_t) sample] & 0xff);
+            bytes[offset + 1] = (uint8_t) (((uint16_t) pcm[(size_t) sample] >> 8) & 0xff);
         }
     }
 

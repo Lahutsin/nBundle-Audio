@@ -15,20 +15,39 @@ namespace nsynth
 class SynthLayer
 {
 public:
-    static constexpr int kOversamplingFactor = 2;
+    static constexpr int kDefaultOversamplingFactor = 2;
     static constexpr int kMaxVoices = 128;
 
     SynthLayer (juce::AudioProcessorValueTreeState& state, Layer id);
+    // Builds the lookup tables the audio code uses (call off the audio thread, before processing).
+    static void initialiseStaticTables();
 
-    void prepare (double hostSampleRate, int maxBlockSize, VoiceRenderPool& renderPool);
-    static constexpr int getOversamplingFactor() noexcept { return kOversamplingFactor; }
+    // oversamplingFactor: 1, 2 or 4 (the voices run at hostSampleRate x factor).
+    void prepare (double hostSampleRate, int maxBlockSize, VoiceRenderPool& renderPool,
+                  int oversamplingFactor = kDefaultOversamplingFactor);
+    int getOversamplingFactor() const noexcept { return oversamplingFactor; }
     float getLatencySamples() const noexcept;
 
     // Voices owned by this layer (changes with SINGLE/DUAL/SPLIT). Kills current notes.
     void assignVoices (Voice* first, int count);
     int getVoiceCount() const noexcept { return (int) voices.size(); }
 
-    void beginBlock (int numHostSamples, const VoiceContext& context, uint64_t* sharedAgeCounter);
+    // Block start in three steps, so the engine can discard a parameter read that overlapped a
+    // preset load: readParameters() reads the host parameters into a candidate, commitParameters()
+    // makes it (and the newest modulation matrix and wave bank) current, startBlock() starts the block.
+    void readParameters() noexcept;
+    void commitParameters (const WaveBank* bank) noexcept;
+    void startBlock (int numHostSamples, const VoiceContext& context, uint64_t* sharedAgeCounter);
+    // All three (tests and tools). bank: this layer's wavetables (null keeps the voices' bank).
+    void beginBlock (int numHostSamples, const VoiceContext& context, uint64_t* sharedAgeCounter,
+                     const WaveBank* bank = nullptr);
+
+    // Preset loads: while suspended the layer keeps its last parameters and fades out over 10 ms;
+    // restart() then drops the voices and effect tails of the old sound.
+    void setSuspended (bool shouldBeSuspended) noexcept { suspended = shouldBeSuspended; }
+    // Silent because of a preset load, or asleep: no voices and the effect tails have died away.
+    bool isSilenced() const noexcept { return (suspended && suspendGain <= 0.0f) || asleep; }
+    void restart() noexcept;
     const LayerSnapshot& snapshot() const noexcept { return snap; }
 
     void noteOn (int note, float velocity, int midiChannel = 1);
@@ -36,18 +55,15 @@ public:
     void setSustain (bool on);
     void polyAftertouch (int note, float value, int midiChannel = 0);
     void setMidiExpression (int midiChannel, float bend, float bendSensitivity, float tuning,
-                            float pressure, float timbre, bool mpeMember);
+                            float pressure, float timbre, bool mpeMember, float zoneBend = 0.0f,
+                            float zoneBendSensitivity = 2.0f);
     void allNotesOff (bool immediate);
     // Velocity mode / curve applied to an incoming 0..1 note velocity.
     float shapeVelocity (float velocity) const noexcept;
 
-    // Render voices for host samples [hostStart, hostStart + hostNum) into the oversampled buffer.
-    void renderSegment (int hostStart, int hostNum) noexcept;
-
-    // Downsample, pan, FX -> dest (stereo, host rate).
-    void finishBlock (juce::AudioBuffer<float>& dest, int numHostSamples);
-    // finishBlock() in two steps, so each layer's compressor can key on the other layer:
-    // finishVoices() leaves the dry layer signal in getKeyBuffer(), applyEffects() runs the chain.
+    // Downsample, pan, FX -> dest (stereo, host rate), in two steps so each layer's compressor can
+    // key on the other layer: finishVoices() leaves the dry layer signal in getKeyBuffer(),
+    // applyEffects() runs the chain.
     void finishVoices (int numHostSamples);
     void applyEffects (juce::AudioBuffer<float>& dest, int numHostSamples, const juce::AudioBuffer<float>* otherLayerKey);
     const juce::AudioBuffer<float>& getKeyBuffer() const noexcept { return keyBuffer; }
@@ -69,21 +85,6 @@ public:
     int getUnitSize() const noexcept { return snap.binaural == BinauralMode::x2 ? 4 : snap.binaural == BinauralMode::x1 ? 2 : 1; }
 
 private:
-    static constexpr int kMaxRenderVoices = kMaxVoices;
-
-    struct Unit { int index; };
-    struct VoiceRenderTask
-    {
-        SynthLayer* layer { nullptr };
-        std::array<Voice*, kMaxRenderVoices> activeVoices {};
-        int activeVoiceCount { 0 };
-        int laneCount { 0 };
-        int startSample { 0 };
-        int numSamples { 0 };
-    };
-
-    static void renderVoiceRange (void* context, int lane) noexcept;
-    static void renderSingleVoice (void* context, int itemIndex, int lane) noexcept;
     friend class SynthEngine;
     int numUnits() const noexcept { return (int) voices.size() / getUnitSize(); }
     Voice& unitVoice (int unit, int sideIndex) noexcept { return *voices[(size_t) (unit * getUnitSize() + sideIndex)]; }
@@ -91,7 +92,8 @@ private:
     bool unitGateOn (int unit) const noexcept;
     int unitNote (int unit) const noexcept;
     uint64_t unitAge (int unit) const noexcept;
-    int pickUnit (int excludeNote = -1) noexcept;
+    int pickUnit() noexcept;
+    int findUnitPlaying (int note, int midiChannel) const noexcept;
     void startUnit (int unit, int note, float velocity, float pitchOffset, int stackIndex, int stackSize,
                     bool retrigger, int midiChannel = 1);
     void releaseUnit (int unit) noexcept;
@@ -102,18 +104,30 @@ private:
     void monoNoteOff (int note, int midiChannel);
     void releaseHeldBySustainEnd();
     bool fxModuleEnabled (FxModule module, const LayerSnapshot& fx) const noexcept;
-    void processFxModule (FxModule module, juce::AudioBuffer<float>& buffer, int numHostSamples, const LayerSnapshot& fx,
-                          double delaySeconds, const juce::AudioBuffer<float>* key) noexcept;
+    void processFxModule (FxModule module, juce::AudioBuffer<float>& buffer, int start, int numHostSamples,
+                          const LayerSnapshot& fx, double delaySeconds, const juce::AudioBuffer<float>* key) noexcept;
+    void applyPanGain (float pan, int numHostSamples) noexcept;
+    static constexpr int kFxControlBlock = 32;   // host samples between effect parameter updates
     void resetFxModule (FxModule module) noexcept;
 
     Layer id;
     ModMatrix modMatrix;
-    std::shared_ptr<const ModMatrixData> blockModMatrix;
+    const ModMatrixData* blockModMatrix { nullptr };   // acquired once per block (audio thread)
     LayerParamReader reader;
     LayerSnapshot snap;
     VoiceContext ctx;
     std::vector<Voice*> voices;
     uint64_t* ageCounter { nullptr };
+    const WaveBank* voiceWaveBank { nullptr };
+    bool voicesReassigned { true };
+    LayerSnapshot candidate;
+    bool sustainBeforeCommit { false };
+    bool suspended { false };
+    float suspendGain { 1.0f };
+    int oversamplingFactor { kDefaultOversamplingFactor };
+    bool asleep { false };
+    int quietSamples { 0 };
+    void updateSleep (const juce::AudioBuffer<float>& output, int numHostSamples) noexcept;
     uint64_t localAge { 0 };
 
     std::vector<int> heldNotes;        // physically held, in press order
@@ -121,6 +135,8 @@ private:
     std::vector<int> sustainedNotes;   // released while sustain/hold active
     std::vector<int> sustainedChannels;
     std::vector<float> heldVelocities;
+    std::vector<int> sustainScratch;
+    static constexpr size_t kMaxNoteKeys = 128 * 16;   // every note on every MIDI channel
     bool pedal { false };
     BinauralMode lastBinaural { BinauralMode::x2 };
     VoiceMode lastVoiceMode { VoiceMode::poly1 };
@@ -149,6 +165,10 @@ private:
     std::array<float, ModMatrixData::kFxModules> fxFade {};   // on/off crossfade, -1 = not started
     std::array<bool, ModMatrixData::kFxModules> fxIdle {};
     std::array<float, ModMatrixData::sourceCount> layerSources {};   // modulation sources of the effects
+    std::array<float, kLayerParamCount> fxPrevious {}, fxTarget {};    // normalised layer destinations
+    bool fxTargetsValid { false };
+    std::array<float, 2> panGain { 1.0f, 1.0f };
+    bool panGainValid { false };
     juce::Random rng;
 
     std::array<std::atomic<float>, kLayerParamCount> uiModOffset {};

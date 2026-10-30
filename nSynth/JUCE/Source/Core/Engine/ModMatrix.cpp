@@ -209,30 +209,34 @@ ModMatrix::ModMatrix()
     publish();
 }
 
-std::shared_ptr<const ModMatrixData> ModMatrix::snapshot() const noexcept
+std::shared_ptr<const ModMatrixData> ModMatrix::snapshot() const
 {
-    return std::atomic_load_explicit (&published, std::memory_order_acquire);
+    return handoff.latest();
 }
 
 void ModMatrix::restoreSnapshot (const ModMatrixData& snapshotData)
 {
+    const std::lock_guard<std::recursive_mutex> edit (editLock);
     data = snapshotData;
     publish();
 }
 
 void ModMatrix::clearAll()
 {
+    const std::lock_guard<std::recursive_mutex> edit (editLock);
     data = {};
     publish();
 }
 
 ModSlot ModMatrix::getSlot (int index) const noexcept
 {
+    const std::lock_guard<std::recursive_mutex> edit (editLock);
     return index >= 0 && index < ModMatrixData::kMaxSlots ? data.slots[(size_t) index] : ModSlot {};
 }
 
 int ModMatrix::addRoute (ModSource source, int destination, float amount, bool bipolar, float curve)
 {
+    const std::lock_guard<std::recursive_mutex> edit (editLock);
     if (! inRange (source, ModMatrixData::sourceCount) || ! isModulatable (destination) || ! std::isfinite (amount))
         return -1;
     for (int i = 0; i < ModMatrixData::kMaxSlots; ++i)
@@ -260,6 +264,7 @@ int ModMatrix::addRoute (ModSource source, int destination, float amount, bool b
 
 bool ModMatrix::setSlot (int index, const ModSlot& slot)
 {
+    const std::lock_guard<std::recursive_mutex> edit (editLock);
     if (index < 0 || index >= ModMatrixData::kMaxSlots)
         return false;
     // A slot may be half-filled while it is being edited (source chosen, destination not yet).
@@ -277,6 +282,7 @@ bool ModMatrix::setSlot (int index, const ModSlot& slot)
 
 void ModMatrix::removeSlot (int index)
 {
+    const std::lock_guard<std::recursive_mutex> edit (editLock);
     if (index < 0 || index >= ModMatrixData::kMaxSlots)
         return;
     // Keep the used slots packed at the top, in their order.
@@ -288,6 +294,7 @@ void ModMatrix::removeSlot (int index)
 
 void ModMatrix::clearSource (ModSource source)
 {
+    const std::lock_guard<std::recursive_mutex> edit (editLock);
     for (int i = ModMatrixData::kMaxSlots - 1; i >= 0; --i)
         if (data.slots[(size_t) i].source == (int) source)
             for (int j = i; j < ModMatrixData::kMaxSlots; ++j)
@@ -297,6 +304,7 @@ void ModMatrix::clearSource (ModSource source)
 
 void ModMatrix::clearDestination (int destination)
 {
+    const std::lock_guard<std::recursive_mutex> edit (editLock);
     for (int i = ModMatrixData::kMaxSlots - 1; i >= 0; --i)
         if (data.slots[(size_t) i].destination == destination)
             for (int j = i; j < ModMatrixData::kMaxSlots; ++j)
@@ -311,6 +319,7 @@ bool ModMatrix::hasSource (ModSource source) const noexcept
 
 int ModMatrix::countRoutesTo (int destination) const noexcept
 {
+    const std::lock_guard<std::recursive_mutex> edit (editLock);
     int n = 0;
     for (const auto& slot : data.slots)
         n += slot.isActive() && slot.destination == destination ? 1 : 0;
@@ -319,6 +328,7 @@ int ModMatrix::countRoutesTo (int destination) const noexcept
 
 int ModMatrix::findRoute (int source, int destination) const noexcept
 {
+    const std::lock_guard<std::recursive_mutex> edit (editLock);
     for (int i = 0; i < ModMatrixData::kMaxSlots; ++i)
     {
         const auto& slot = data.slots[(size_t) i];
@@ -330,6 +340,7 @@ int ModMatrix::findRoute (int source, int destination) const noexcept
 
 float ModMatrix::getFixedAmount (ModSource source, ModTarget target) const noexcept
 {
+    const std::lock_guard<std::recursive_mutex> edit (editLock);
     if (! inRange (source, ModMatrixData::sourceCount) || ! inRange (target, (int) ModTarget::count))
         return 0.0f;
     const int index = findRoute ((int) source, legacyDestination (target));
@@ -338,6 +349,7 @@ float ModMatrix::getFixedAmount (ModSource source, ModTarget target) const noexc
 
 float ModMatrix::getDirectAmount (ModSource source, DirectModTarget target) const noexcept
 {
+    const std::lock_guard<std::recursive_mutex> edit (editLock);
     if (! inRange (source, ModMatrixData::sourceCount) || ! inRange (target, (int) DirectModTarget::count))
         return 0.0f;
     const int index = findRoute ((int) source, legacyDestination (target));
@@ -346,6 +358,7 @@ float ModMatrix::getDirectAmount (ModSource source, DirectModTarget target) cons
 
 void ModMatrix::setFixedAmount (ModSource source, ModTarget target, float amount)
 {
+    const std::lock_guard<std::recursive_mutex> edit (editLock);
     if (! inRange (source, ModMatrixData::sourceCount) || ! inRange (target, (int) ModTarget::count) || ! std::isfinite (amount))
         return;
     const int destination = legacyDestination (target);
@@ -373,6 +386,7 @@ void ModMatrix::setFixedAmount (ModSource source, ModTarget target, float amount
 
 bool ModMatrix::setDirectAmount (ModSource source, DirectModTarget target, float amount)
 {
+    const std::lock_guard<std::recursive_mutex> edit (editLock);
     if (! inRange (source, ModMatrixData::sourceCount) || ! inRange (target, (int) DirectModTarget::count)
         || ! std::isfinite (amount) || isPanelDuplicate (source, target))
         return false;
@@ -402,12 +416,14 @@ bool ModMatrix::setDirectAmount (ModSource source, DirectModTarget target, float
 
 void ModMatrix::clearTarget (ModTarget target)
 {
+    const std::lock_guard<std::recursive_mutex> edit (editLock);
     if (inRange (target, (int) ModTarget::count))
         clearDestination (legacyDestination (target));
 }
 
 void ModMatrix::clearDirectTarget (DirectModTarget target)
 {
+    const std::lock_guard<std::recursive_mutex> edit (editLock);
     if (inRange (target, (int) DirectModTarget::count))
         clearDestination (legacyDestination (target));
 }
@@ -415,6 +431,7 @@ void ModMatrix::clearDirectTarget (DirectModTarget target)
 //==============================================================================
 juce::String ModMatrix::getMacroName (int macro) const
 {
+    const std::lock_guard<std::recursive_mutex> edit (editLock);
     if (macro < 0 || macro >= ModMatrixData::kMacros)
         return {};
     const juce::String name (data.macroNames[(size_t) macro].data());
@@ -423,6 +440,7 @@ juce::String ModMatrix::getMacroName (int macro) const
 
 void ModMatrix::setMacroName (int macro, const juce::String& name)
 {
+    const std::lock_guard<std::recursive_mutex> edit (editLock);
     if (macro < 0 || macro >= ModMatrixData::kMacros)
         return;
     auto& field = data.macroNames[(size_t) macro];
@@ -434,11 +452,13 @@ void ModMatrix::setMacroName (int macro, const juce::String& name)
 
 MsegShape ModMatrix::getMseg (int index) const noexcept
 {
+    const std::lock_guard<std::recursive_mutex> edit (editLock);
     return index >= 0 && index < 2 ? data.msegs[(size_t) index] : MsegShape {};
 }
 
 void ModMatrix::setMseg (int index, const MsegShape& shape)
 {
+    const std::lock_guard<std::recursive_mutex> edit (editLock);
     if (index < 0 || index >= 2 || ! shape.isValid())
         return;
     data.msegs[(size_t) index] = shape;
@@ -447,11 +467,13 @@ void ModMatrix::setMseg (int index, const MsegShape& shape)
 
 std::array<FxModule, ModMatrixData::kFxModules> ModMatrix::getFxOrder() const noexcept
 {
+    const std::lock_guard<std::recursive_mutex> edit (editLock);
     return data.fxOrder;
 }
 
 void ModMatrix::moveFxModule (int from, int to)
 {
+    const std::lock_guard<std::recursive_mutex> edit (editLock);
     if (from < 0 || from >= ModMatrixData::kFxModules || to < 0 || to >= ModMatrixData::kFxModules || from == to)
         return;
     auto& order = data.fxOrder;
@@ -467,6 +489,7 @@ void ModMatrix::moveFxModule (int from, int to)
 
 bool ModMatrix::setFxOrder (const std::array<FxModule, ModMatrixData::kFxModules>& order)
 {
+    const std::lock_guard<std::recursive_mutex> edit (editLock);
     std::array<bool, ModMatrixData::kFxModules> seen {};
     for (auto module : order)
     {
@@ -482,6 +505,7 @@ bool ModMatrix::setFxOrder (const std::array<FxModule, ModMatrixData::kFxModules
 //==============================================================================
 juce::ValueTree ModMatrix::toValueTree (int layerIndex) const
 {
+    const std::lock_guard<std::recursive_mutex> edit (editLock);
     juce::ValueTree tree ("MOD_MATRIX");
     tree.setProperty ("schemaVersion", schemaVersion, nullptr);
     tree.setProperty ("layer", layerIndex, nullptr);
@@ -527,6 +551,7 @@ juce::ValueTree ModMatrix::toValueTree (int layerIndex) const
 
 bool ModMatrix::restoreFromValueTree (const juce::ValueTree& tree, juce::String* error)
 {
+    const std::lock_guard<std::recursive_mutex> edit (editLock);
     const int version = (int) tree.getProperty ("schemaVersion", -1);
     if (! tree.hasType ("MOD_MATRIX") || version < 1 || version > schemaVersion)
     {
@@ -654,30 +679,46 @@ bool ModMatrix::isPanelDuplicate (ModSource source, DirectModTarget target) noex
                                          || target == DirectModTarget::env1Sustain || target == DirectModTarget::env1Release));
 }
 
+namespace
+{
+// Per-destination flags, built once: both checks run on the audio thread every block.
+struct DestinationTables
+{
+    std::array<bool, kLayerParamCount> modulatable {}, layer {};
+
+    DestinationTables()
+    {
+        const auto& specs = getLayerParamSpecs();
+        for (size_t d = 0; d < specs.size() && d < kLayerParamCount; ++d)
+        {
+            const auto& spec = specs[d];
+            const juce::String suffix (spec.suffix);
+            // Read only when a note starts: modulating them would not be heard.
+            modulatable[d] = spec.kind == Kind::floatParam && spec.section != Section::macros
+                          && suffix != pid::stereoWidth && suffix != pid::velCurve;
+            for (auto layerSection : { Section::fx, Section::delay, Section::reverb, Section::fxDistortion, Section::fxEq,
+                                       Section::fxCompressor, Section::fxPhaser, Section::fxFlanger })
+                layer[d] = layer[d] || spec.section == layerSection;
+            layer[d] = layer[d] || suffix == pid::pan;
+        }
+    }
+};
+
+const DestinationTables& destinationTables()
+{
+    static const DestinationTables tables;
+    return tables;
+}
+} // namespace
+
 bool ModMatrix::isModulatable (int destination) noexcept
 {
-    const auto& specs = getLayerParamSpecs();
-    if (destination < 0 || destination >= (int) specs.size())
-        return false;
-    const auto& spec = specs[(size_t) destination];
-    if (spec.kind != Kind::floatParam || spec.section == Section::macros)
-        return false;
-    // Read only when a note starts: modulating them would not be heard.
-    const juce::String suffix (spec.suffix);
-    return suffix != pid::stereoWidth && suffix != pid::velCurve;
+    return destination >= 0 && destination < (int) kLayerParamCount && destinationTables().modulatable[(size_t) destination];
 }
 
 bool ModMatrix::isLayerDestination (int destination) noexcept
 {
-    const auto& specs = getLayerParamSpecs();
-    if (destination < 0 || destination >= (int) specs.size())
-        return false;
-    const auto section = specs[(size_t) destination].section;
-    for (auto layerSection : { Section::fx, Section::delay, Section::reverb, Section::fxDistortion, Section::fxEq,
-                               Section::fxCompressor, Section::fxPhaser, Section::fxFlanger })
-        if (section == layerSection)
-            return true;
-    return juce::String (specs[(size_t) destination].suffix) == pid::pan;
+    return destination >= 0 && destination < (int) kLayerParamCount && destinationTables().layer[(size_t) destination];
 }
 
 const char* ModMatrix::getSourceName (ModSource source) noexcept
@@ -745,7 +786,8 @@ const char* ModMatrix::getFxModuleName (FxModule module) noexcept
 
 void ModMatrix::publish()
 {
+    const std::lock_guard<std::recursive_mutex> edit (editLock);
     data.updateDerived();
-    std::atomic_store_explicit (&published, std::make_shared<const ModMatrixData> (data), std::memory_order_release);
+    handoff.publish (std::make_shared<const ModMatrixData> (data));
 }
 } // namespace nsynth

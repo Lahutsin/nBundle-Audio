@@ -1,4 +1,5 @@
 #include "VoiceFilter.h"
+#include "FastMath.h"
 
 namespace nsynth
 {
@@ -30,7 +31,7 @@ float VoiceFilter::softClipRatio (float x) noexcept
 float VoiceFilter::prewarp (float hz, double sr) noexcept
 {
     const double f = juce::jlimit (1.0, 0.49 * sr, (double) hz);
-    return (float) std::tan (juce::MathConstants<double>::pi * f / sr);
+    return (float) fastmath::tanPrewarp (juce::MathConstants<double>::pi * f / sr);
 }
 
 void VoiceFilter::reset() noexcept
@@ -101,6 +102,7 @@ float VoiceFilter::processLadder (float u0) noexcept
     {
         // Linearised stage coefficients around the current estimate: y_i = a_i * y_(i-1) + b_i.
         const float tIn = softClipRatio (u);
+        float previousD = tIn;
         for (int i = 0; i < 4; ++i)
         {
             float c, d;
@@ -115,8 +117,10 @@ float VoiceFilter::processLadder (float u0) noexcept
             else
             {
                 // Transistor ladder: dy_i/dt = g * (tanh (y_(i-1)) - tanh (y_i)), y_0 = u.
-                c = i == 0 ? tIn : softClipRatio (est[i - 1]);
+                // tanh (y_(i-1)) / y_(i-1) is the previous stage's d: computed once per pass.
+                c = previousD;
                 d = softClipRatio (est[i]);
+                previousD = d;
             }
             const float denominator = 1.0f / (1.0f + g * d);
             a[i] = g * c * denominator;

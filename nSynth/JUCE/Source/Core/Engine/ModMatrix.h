@@ -3,6 +3,8 @@
 #include <juce_data_structures/juce_data_structures.h>
 #include <array>
 #include <memory>
+#include <mutex>
+#include "RealtimeHandoff.h"
 #include "LayerSnapshot.h"
 
 namespace nsynth
@@ -115,7 +117,12 @@ class ModMatrix
 public:
     ModMatrix();
 
-    std::shared_ptr<const ModMatrixData> snapshot() const noexcept;
+    // Editing threads: the newest published data (shared ownership, never freed under the reader).
+    std::shared_ptr<const ModMatrixData> snapshot() const;
+    // Audio thread only: the newest data, valid until the next acquireForAudio() of this matrix.
+    const ModMatrixData* acquireForAudio() noexcept { return handoff.acquire(); }
+    // Editing threads: frees snapshots the audio thread has moved past.
+    void collectGarbage() { handoff.collect(); }
     void restoreSnapshot (const ModMatrixData& snapshot);
     void clearAll();
 
@@ -170,7 +177,10 @@ public:
 private:
     int findRoute (int source, int destination) const noexcept;   // unipolar linear slot
     void publish();
+    // Guards `data` against concurrent editing threads (editor vs. host state calls); never
+    // taken by the audio thread, which only reads published snapshots.
+    mutable std::recursive_mutex editLock;
     ModMatrixData data;
-    std::shared_ptr<const ModMatrixData> published;
+    RealtimeHandoff<ModMatrixData> handoff;
 };
 } // namespace nsynth

@@ -1,4 +1,5 @@
 #include "Filter2.h"
+#include "FastMath.h"
 #include "VoiceFilter.h"
 #include <cmath>
 
@@ -50,7 +51,7 @@ void Filter2::reset() noexcept
 float Filter2::gainFor (float hz) const noexcept
 {
     const double f = juce::jlimit (10.0, 0.45 * sampleRate, (double) hz);
-    return (float) std::tan (juce::MathConstants<double>::pi * f / sampleRate);
+    return (float) fastmath::tanPrewarp (juce::MathConstants<double>::pi * f / sampleRate);
 }
 
 std::array<float, 3> Filter2::formantsFor (float vowel) noexcept

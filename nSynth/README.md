@@ -3,7 +3,7 @@
 This repository contains the JUCE version of **nSynth** — a 128-voice,
 bi-timbral hybrid digital/analog-modeled polyphonic synthesizer with
 binaural stereo voice pairing, a free modulation matrix (64 slots, 8 macros,
-two drawable MSEGs), a second multimode filter, 32 custom wavetable slots,
+two drawable MSEGs), a second multimode filter, 32 custom wavetable slots per layer,
 adjustable velocity, and a reorderable eight-module effect chain per layer.
 
 ![nSynth plugin UI](docs/Plugin.png)
@@ -16,19 +16,8 @@ adjustable velocity, and a reorderable eight-module effect chain per layer.
 
 ![nSynth wave bank](docs/WaveBank.png)
 
-The full design plan, DSP specification, parameter registry, UI spec,
-preset-manager design and phased roadmap live in [docs/](./docs):
-
-- [docs/PLAN.md](./docs/PLAN.md) — start here.
-- [docs/08-PLAN-REVIEW.md](./docs/08-PLAN-REVIEW.md)
-- [docs/09-TEST-SPEC.md](./docs/09-TEST-SPEC.md)
-- [docs/01-ARCHITECTURE.md](./docs/01-ARCHITECTURE.md)
-- [docs/02-PARAMETERS.md](./docs/02-PARAMETERS.md)
-- [docs/03-DSP-SPEC.md](./docs/03-DSP-SPEC.md)
-- [docs/04-UI-SPEC.md](./docs/04-UI-SPEC.md)
-- [docs/05-PRESET-MANAGER.md](./docs/05-PRESET-MANAGER.md)
-- [docs/06-ROADMAP.md](./docs/06-ROADMAP.md)
-- [docs/07-QA-AND-VALIDATION.md](./docs/07-QA-AND-VALIDATION.md)
+The design documents (plan, DSP / UI / preset specs, roadmap, QA) live in `docs/*.md`
+locally; they are git-ignored (`docs/.gitignore`), as are the generated reports.
 
 ## Current Status
 
@@ -36,11 +25,15 @@ The synthesis core, dual-layer voice architecture, modulation matrix,
 wavetable system, MIDI/MPE engine, compact UI, multi-core scheduler, and
 factory content are implemented:
 
+- Real-time safe audio thread: no locks, allocations or frees in `processBlock` (checked by
+  `RealtimeSafetyTests` with a counting allocator). Modulation snapshots and wave banks are handed
+  over through hazard pointers (`RealtimeHandoff`) and freed on the message thread.
 - DDS1: 7-core super saw (OFF / 1/2 / ON; measured detune response and centre/side mix
   curves), analog-modelled shapes (slightly convex saw ramp, square with AC-coupled plateau
   droop, rounded triangle, pure sine), noise, morphing, 32 named alternative waveforms
   (`.ws6` I/O): FM = 4-operator FM waves, PD = phase distortion incl. the resonance waves,
-  DG = digital waveform spectra, WT = vocal/digital wavetable style.
+  DG = digital waveform spectra, WT = vocal/digital wavetable style. Each layer has its own
+  wave bank: a patch carries its custom waves (factory waves are not stored), a performance both.
 - DDS2: polyBLEP oscillator with the same analog shapes, NORM/RING/SYNC, LFO range, sub oscillator.
 - Cross mod (exponential FM), mixer, 1-pole HPF -> analog-modelled low-pass (VCF TYPE):
   Ladder 24 / Ladder 12 (transistor ladder, tanh in every stage and at the input), Cascade 24
@@ -79,27 +72,37 @@ factory content are implemented:
   flanger, delay (tempo divisions 1/64..1/1 incl. triplets/dotted or 1..2000 ms, feedback,
   ping-pong, low/high cut, freeze, duck) and reverb (size, decay, pre-delay 0.1..250 ms,
   high/low cut, width, modulation, duck).
-- Fixed 2x internal oversampling; Mix + optional Upper/Lower outputs; a stereo-linked
+- Voice oversampling Eco 1x / Standard 2x (default) / High 4x, optionally 4x for offline
+  renders (QUALITY in the performance strip); Mix + optional Upper/Lower outputs; a stereo-linked
   safety limiter (-0.3 dBFS ceiling) on the main mix; a non-finite sample can never reach the
   FX feedback loops (the layer would otherwise go silent until reload); lock-free atomic
-  work-stealing across all CPU cores.
+  work-stealing on real-time worker threads (joining the host audio workgroup where available),
+  with one worker budget shared by all instances of the process. Controller events are applied on
+  a 16-sample grid, notes sample-accurately. A layer without voices sleeps once its tails are gone.
+- Preset loads are atomic: the layer keeps its old state, fades out over 10 ms and restarts
+  with the new patch, so a load never plays a mix of both. Master volume, pan and effect
+  parameters glide (per sample / 32-sample steps) instead of stepping at block boundaries.
+- MIDI: MPE zones (the MPE configuration message sets member channels to a 48 semitone bend
+  range; member bend is exact, zone master bend applies to the zone), MIDI learn (sustain,
+  (N)RPN and channel-mode CCs are never learned), program change = factory performances
+  (also exposed as host programs; program 0 keeps the current sound), mod wheel / expression
+  follow whichever of panel or MIDI moved last.
 - Editor generated from the parameter registry with uniform scaling 50-200 %: one layer at
   a time (UPPER / LOWER tabs show the loaded patch) on three pages: SYNTH (oscillators ->
   filter -> amp, envelopes/LFOs, voicing, FILTER 2, macros), MOD (MSEG editors, modulation
   slots) and FX (the effect chain as cards in processing order); performance settings and live
   controllers in one strip.
-- Performance presets (`.nsynthperf`), layer patches (`.nsynthpatch`), layer init/copy,
-  and a preset browser (see below).
+- Performance presets (`.nsynthperf`), layer patches (`.nsynthpatch`), layer init/copy
+  (confirmed when the layer has unsaved changes), undo / redo of everything a performance stores
+  (UNDO / REDO, Cmd/Ctrl+Z, Cmd/Ctrl+Shift+Z), and a preset browser (see below).
 
 Factory content: 112 hand-designed, loudness-matched patches in seven categories
 and 16 performances (8 layers, 8 splits), plus an offline DSP/CPU analysis target.
-Verified on Linux: `nSynthTests` (95,664 checks, 0 failures, including a random-patch
-robustness test). AU validation and the AU build have not been re-run since the
-modulation/effects rework (now 335 parameters).
+Verified on Linux: `nSynthTests` (95,787 checks, 0 failures, including a random-patch
+robustness test and the real-time safety tests). AU validation and the AU build have not been
+re-run since the modulation/effects rework (now 335 parameters).
 Manual host/controller/pluginval
-checks remain open. Current verification status is in
-[docs/07-QA-AND-VALIDATION.md](./docs/07-QA-AND-VALIDATION.md), with phase
-details in [docs/06-ROADMAP.md](./docs/06-ROADMAP.md).
+checks remain open (the local `docs/07-QA-AND-VALIDATION.md` tracks them).
 
 The project is configured with CMake and C++17. By default it fetches JUCE
 from GitHub during configure time.
@@ -269,5 +272,3 @@ Studio generator.
 auval -v aumu nSyn NSYA                                          # macOS: AU VALIDATION SUCCEEDED
 ```
 
-See [docs/07-QA-AND-VALIDATION.md](./docs/07-QA-AND-VALIDATION.md) and
-[docs/09-TEST-SPEC.md](./docs/09-TEST-SPEC.md).

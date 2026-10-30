@@ -23,10 +23,12 @@ private:
 
 SynthEngine::SynthEngine (juce::AudioProcessorValueTreeState& state)
     : perfReader (state),
-      waveBank (std::make_shared<WaveBank>()),
       upper (state, Layer::upper),
       lower (state, Layer::lower)
 {
+    SynthLayer::initialiseStaticTables();
+    for (auto& bank : waveBanks)
+        bank.publish (WaveBank::factory());
     for (auto& mapping : learnedCCBinding)
         mapping.store (-1);
     for (size_t channel = 0; channel < 16; ++channel)
@@ -49,19 +51,21 @@ SynthEngine::SynthEngine (juce::AudioProcessorValueTreeState& state)
         addBinding (perfParamId (spec.suffix), spec, -1);
 }
 
-void SynthEngine::prepare (double sampleRate, int maxBlockSize, int requestedRenderWorkers)
+void SynthEngine::prepare (double sampleRate, int maxBlockSize, int requestedRenderWorkers, int oversamplingFactor)
 {
-    renderPool.prepare (requestedRenderWorkers);
+    renderPool.prepare (requestedRenderWorkers, maxBlockSize, sampleRate);
     perfReader.read (perf);
 
-    const double osRate = sampleRate * SynthLayer::kOversamplingFactor;
+    const double osRate = sampleRate * oversamplingFactor;
     for (int i = 0; i < kNumVoices; ++i)
-        voices[(size_t) i].prepare (osRate, waveBank.get(), (uint32_t) (1000 + 7919 * i));
+        voices[(size_t) i].prepare (osRate, WaveBank::factory().get(), (uint32_t) (1000 + 7919 * i));
+    audioWaveBanks.fill (nullptr);
 
     for (auto* l : { &upper, &lower })
-        l->prepare (sampleRate, maxBlockSize, renderPool);
+        l->prepare (sampleRate, maxBlockSize, renderPool, oversamplingFactor);
 
     assignVoices (perf.keyboardMode, perf.singleLayer);
+    lastMasterGain = -1.0f;
     upperBuffer.setSize (2, maxBlockSize);
     lowerBuffer.setSize (2, maxBlockSize);
     limiter.prepare (sampleRate);
@@ -99,6 +103,21 @@ void SynthEngine::appendModMatrixState (juce::ValueTree& state) const
 
 bool SynthEngine::restoreModMatrixState (const juce::ValueTree& state, juce::String* error)
 {
+    std::array<ModMatrixData, 2> staged;
+    if (! stageModMatrixState (state, staged, error))
+        return false;
+    applyModMatrixState (staged);
+    return true;
+}
+
+void SynthEngine::applyModMatrixState (const std::array<ModMatrixData, 2>& staged)
+{
+    for (auto layerId : { Layer::upper, Layer::lower })
+        modMatrix (layerId).restoreSnapshot (staged[(size_t) toInt (layerId)]);
+}
+
+bool SynthEngine::stageModMatrixState (const juce::ValueTree& state, std::array<ModMatrixData, 2>& result, juce::String* error)
+{
     std::array<ModMatrix, 2> staged;
     std::array<bool, 2> found {};
     for (int i = 0; i < state.getNumChildren(); ++i)
@@ -117,8 +136,8 @@ bool SynthEngine::restoreModMatrixState (const juce::ValueTree& state, juce::Str
         found[(size_t) layerIndex] = true;
     }
 
-    for (auto layerId : { Layer::upper, Layer::lower })
-        modMatrix (layerId).restoreSnapshot (*staged[(size_t) toInt (layerId)].snapshot());
+    for (size_t i = 0; i < 2; ++i)
+        result[i] = *staged[i].snapshot();
     return true;
 }
 
@@ -127,15 +146,7 @@ void SynthEngine::process (juce::AudioBuffer<float>& mix, juce::AudioBuffer<floa
 {
     jassert (prepared);
     const int n = mix.getNumSamples();
-    if (auto updated = std::atomic_exchange (&pendingWaveBank, std::shared_ptr<const WaveBank> {}))
-    {
-        auto retired = std::atomic_exchange (&waveBank, updated);
-        for (auto& voice : voices)
-            voice.setWaveBank (updated.get());
-        std::atomic_store (&retiredWaveBank, std::move (retired));
-        waveImportState.store (WaveImportState::ready);
-    }
-    perfReader.read (perf);
+    beginBlockState();
     if (midiStateRefresh.exchange (false, std::memory_order_acq_rel))
         for (int channel = 1; channel <= 16; ++channel)
             updateChannelExpression (channel);
@@ -146,23 +157,40 @@ void SynthEngine::process (juce::AudioBuffer<float>& mix, juce::AudioBuffer<floa
     VoiceContext ctx;
     ctx.bpm = hostBpm > 0.0 ? hostBpm : (double) perf.tempoParam;
     ctx.ribbonSemitones = 12.0f * (std::abs (perf.ribbon) > 1.0e-4f ? perf.ribbon : midiRibbon);
-    ctx.modLever = juce::jmax (perf.modLever, midiModLever);
-    ctx.expression = juce::jmax (perf.expression, midiExpression);
+    // MOD LEVER / EXPRESSION: the panel control and the MIDI controller share one value, the one
+    // moved last wins (a parked panel knob does not mask the wheel below its position).
+    if (! juce::exactlyEqual (perf.modLever, lastPanelModLever))
+    {
+        lastPanelModLever = perf.modLever;
+        midiModLever = perf.modLever;
+    }
+    if (! juce::exactlyEqual (perf.expression, lastPanelExpression))
+    {
+        lastPanelExpression = perf.expression;
+        midiExpression = perf.expression;
+    }
+    ctx.modLever = midiModLever;
+    ctx.expression = midiExpression;
     ctx.layerPitchOffset = (float) perf.transpose + perf.perfDetune + perf.fineCents / 100.0f;
 
     VoiceContext lowerCtx = ctx;
     lowerCtx.layerPitchOffset += perf.lowerDetune; // LOWER LAYER DETUNE
 
-    upper.beginBlock (n, ctx, &ageCounter);
-    lower.beginBlock (n, lowerCtx, &ageCounter);
+    upper.startBlock (n, ctx, &ageCounter);
+    lower.startBlock (n, lowerCtx, &ageCounter);
 
+    // Notes start sample-accurately. Controllers (dense MPE / CC streams) are applied on a
+    // kControlGrid-sample grid, so they never split a block into dozens of tiny render passes.
     int pos = 0;
     for (const auto meta : midi)
     {
-        const int t = juce::jlimit (0, n, meta.samplePosition);
+        const auto message = meta.getMessage();
+        int t = juce::jlimit (0, n, meta.samplePosition);
+        if (! message.isNoteOnOrOff())
+            t = juce::jmax (pos, t - t % kControlGrid);
         renderSegmentsCombined (pos, t - pos);
         pos = t;
-        handleMidi (meta.getMessage());
+        handleMidi (message);
     }
     renderSegmentsCombined (pos, n - pos);
 
@@ -172,12 +200,15 @@ void SynthEngine::process (juce::AudioBuffer<float>& mix, juce::AudioBuffer<floa
     upper.applyEffects (upperBuffer, n, &lower.getKeyBuffer());
     lower.applyEffects (lowerBuffer, n, &upper.getKeyBuffer());
 
+    // MASTER VOLUME ramps across the block: automation never steps.
     const float master = juce::Decibels::decibelsToGain (perf.masterDb, -60.0f);
+    const float startMaster = lastMasterGain < 0.0f ? master : lastMasterGain;
+    lastMasterGain = master;
     for (int ch = 0; ch < juce::jmin (2, mix.getNumChannels()); ++ch)
     {
         mix.clear (ch, 0, n);
-        mix.addFrom (ch, 0, upperBuffer, ch, 0, n, master);
-        mix.addFrom (ch, 0, lowerBuffer, ch, 0, n, master);
+        mix.addFromWithRamp (ch, 0, upperBuffer.getReadPointer (ch), n, startMaster, master);
+        mix.addFromWithRamp (ch, 0, lowerBuffer.getReadPointer (ch), n, startMaster, master);
     }
     if (mix.getNumChannels() >= 2)
         limiter.process (mix.getWritePointer (0), mix.getWritePointer (1), n);
@@ -191,11 +222,84 @@ void SynthEngine::process (juce::AudioBuffer<float>& mix, juce::AudioBuffer<floa
         for (int ch = 0; ch < juce::jmin (2, dest->getNumChannels()); ++ch)
         {
             dest->clear (ch, 0, n);
-            dest->addFrom (ch, 0, src, ch, 0, n, master);
+            dest->addFromWithRamp (ch, 0, src.getReadPointer (ch), n, startMaster, master);
         }
     };
     copyLayer (upperOut, upperBuffer);
     copyLayer (lowerOut, lowerBuffer);
+}
+
+void SynthEngine::beginStateChange (int scopeMask) noexcept
+{
+    for (int i = 0; i < 3; ++i)
+        if ((scopeMask & (1 << i)) != 0)
+            stateChangeDepth[(size_t) i].fetch_add (1, std::memory_order_seq_cst);
+    stateEpoch.fetch_add (1, std::memory_order_seq_cst);
+}
+
+void SynthEngine::endStateChange (int scopeMask) noexcept
+{
+    stateEpoch.fetch_add (1, std::memory_order_seq_cst);
+    for (int i = 0; i < 3; ++i)
+        if ((scopeMask & (1 << i)) != 0)
+        {
+            stateGeneration[(size_t) i].fetch_add (1, std::memory_order_seq_cst);
+            stateChangeDepth[(size_t) i].fetch_sub (1, std::memory_order_seq_cst);
+        }
+}
+
+void SynthEngine::beginBlockState() noexcept
+{
+    // Seqlock-style read: parameters read while a preset load was in progress (the epoch moved)
+    // are discarded and the block runs with the previous ones.
+    const auto epoch = stateEpoch.load (std::memory_order_seq_cst);
+    std::array<bool, 3> frozen {};
+    for (size_t i = 0; i < 3; ++i)
+        frozen[i] = stateChangeDepth[i].load (std::memory_order_seq_cst) > 0;
+
+    if (! frozen[2])
+        perfReader.read (perfCandidate);
+    for (auto* l : { &upper, &lower })
+        if (! frozen[(size_t) toInt (l->getId())])
+            l->readParameters();
+    const bool valid = stateEpoch.load (std::memory_order_seq_cst) == epoch;
+
+    if (valid && ! frozen[2])
+        perf = perfCandidate;
+    for (auto* l : { &upper, &lower })
+    {
+        const auto index = (size_t) toInt (l->getId());
+        l->setSuspended (frozen[index] || frozen[2]);
+        if (! valid || frozen[index])
+            continue;
+        const auto* bank = waveBanks[index].acquire();
+        if (bank != audioWaveBanks[index])
+        {
+            audioWaveBanks[index] = bank;
+            garbageNotice.store (true, std::memory_order_release);
+        }
+        l->commitParameters (bank);
+    }
+
+    if (! valid)
+        return;
+    for (size_t i = 0; i < 3; ++i)
+    {
+        const auto generation = stateGeneration[i].load (std::memory_order_seq_cst);
+        if (frozen[i] || generation == seenStateGeneration[i])
+            continue;
+        seenStateGeneration[i] = generation;
+        if (i == 2)
+        {
+            upper.restart();
+            lower.restart();
+            midiStateRefresh.store (true, std::memory_order_release);
+        }
+        else
+        {
+            layer (i == 0 ? Layer::upper : Layer::lower).restart();
+        }
+    }
 }
 
 namespace
@@ -241,6 +345,8 @@ void SynthEngine::renderSegmentsCombined (int hostStart, int hostNum) noexcept
         const int f = layerPtr->getOversamplingFactor();
         layerStarts[(size_t) idx] = hostStart * f;
         layerCounts[(size_t) idx] = hostNum * f;
+        if (layerPtr->isSilenced())
+            continue;
         for (auto* voice : layerPtr->voices)
             if (voice->isActive())
             {
@@ -254,7 +360,8 @@ void SynthEngine::renderSegmentsCombined (int hostStart, int hostNum) noexcept
     if (task.itemCount == 0)
         return;
 
-    const int availableWorkers = renderPool.getNumWorkers();
+    // Waking the workers costs a few microseconds: short segments render on the audio thread.
+    const int availableWorkers = hostNum >= kMinParallelSamples ? renderPool.getNumWorkers() : 0;
     const int laneCount = juce::jmin (availableWorkers + 1, task.itemCount);
     if (laneCount < 2 || task.itemCount < 2)
     {
@@ -306,46 +413,130 @@ void SynthEngine::appendWaveBankState (juce::ValueTree& state) const
     for (int i = state.getNumChildren() - 1; i >= 0; --i)
         if (state.getChild (i).hasType ("USER_WAVES"))
             state.removeChild (i, nullptr);
-    state.addChild (latestWaveBank()->toValueTree(), -1, nullptr);
+    for (auto l : { Layer::upper, Layer::lower })
+    {
+        const auto bank = getWaveBank (l);
+        if (bank->hasFactoryContent())
+            continue;
+        auto waves = bank->toValueTree();
+        waves.setProperty ("layer", toInt (l), nullptr);
+        state.addChild (waves, -1, nullptr);
+    }
 }
 
-bool SynthEngine::restoreWaveBankState (const juce::ValueTree& state, juce::String* error)
+void SynthEngine::appendLayerWaveBankState (juce::ValueTree& patch, Layer l) const
 {
-    juce::ValueTree bankState;
+    for (int i = patch.getNumChildren() - 1; i >= 0; --i)
+        if (patch.getChild (i).hasType ("USER_WAVES"))
+            patch.removeChild (i, nullptr);
+    const auto bank = getWaveBank (l);
+    if (! bank->hasFactoryContent())
+        patch.addChild (bank->toValueTree(), -1, nullptr);
+}
+
+WaveBankPtr SynthEngine::buildWaveBank (const juce::ValueTree& userWaves, juce::String* error)
+{
+    if (! userWaves.isValid())
+        return WaveBank::factory();
+    if (! WaveBank::isValidValueTree (userWaves, error))
+        return nullptr;
+
+    // Building the mip tables takes tens of milliseconds: reuse the banks loaded recently
+    // (auditioning presets back and forth, compare, both layers of a performance).
+    auto payloadHash = [] (const juce::ValueTree& waves)
+    {
+        const auto* payload = waves.getProperty ("cycles").getBinaryData();
+        const auto* bytes = static_cast<const uint8_t*> (payload->getData());
+        uint64_t hash = 14695981039346656037ull; // FNV-1a
+        for (size_t i = 0; i < payload->getSize(); ++i)
+            hash = (hash ^ bytes[i]) * 1099511628211ull;
+        return hash;
+    };
+    static const uint64_t factoryKey = payloadHash (WaveBank::factory()->toValueTree());
+    const auto key = payloadHash (userWaves);
+    if (key == factoryKey)
+        return WaveBank::factory();
+
+    {
+        const std::lock_guard<std::mutex> guard (waveCacheMutex);
+        for (auto it = waveCache.begin(); it != waveCache.end(); ++it)
+            if (it->first == key)
+            {
+                auto entry = *it;
+                waveCache.erase (it);
+                waveCache.insert (waveCache.begin(), entry);
+                return entry.second;
+            }
+    }
+
+    auto bank = std::make_shared<WaveBank> (*WaveBank::factory());
+    if (! bank->restoreFromValueTree (userWaves, error))
+        return nullptr;
+    WaveBankPtr result = bank->hasFactoryContent() ? WaveBank::factory() : WaveBankPtr (std::move (bank));
+    const std::lock_guard<std::mutex> guard (waveCacheMutex);
+    waveCache.insert (waveCache.begin(), { key, result });
+    if (waveCache.size() > 4)
+        waveCache.pop_back();
+    return result;
+}
+
+void SynthEngine::setWaveBank (Layer l, WaveBankPtr bank)
+{
+    if (bank == nullptr)
+        bank = WaveBank::factory();
+    auto& handoff = waveBanks[(size_t) toInt (l)];
+    if (handoff.latest() != bank)
+        handoff.publish (std::move (bank));
+}
+
+bool SynthEngine::stageWaveBankState (const juce::ValueTree& state, std::array<WaveBankPtr, 2>& staged, juce::String* error)
+{
+    // Sessions before per-layer banks carry one USER_WAVES child without a layer: it applies to both.
+    std::array<juce::ValueTree, 2> trees;
+    juce::ValueTree shared;
     for (int i = 0; i < state.getNumChildren(); ++i)
     {
         const auto child = state.getChild (i);
         if (! child.hasType ("USER_WAVES"))
             continue;
-        if (bankState.isValid())
+        const int layerIndex = (int) child.getProperty ("layer", -1);
+        auto& slot = layerIndex < 0 ? shared : trees[(size_t) juce::jlimit (0, 1, layerIndex)];
+        if (layerIndex > 1 || slot.isValid() || (layerIndex < 0 && (trees[0].isValid() || trees[1].isValid()))
+            || (layerIndex >= 0 && shared.isValid()))
         {
-            if (error) *error = "State contains duplicate user wavetable banks.";
+            if (error) *error = "State contains invalid or duplicate user wavetable banks.";
             return false;
         }
-        bankState = child;
+        slot = child;
     }
+    if (shared.isValid())
+        trees = { shared, shared };
 
-    if (! bankState.isValid())
-        return true;
-    if (! WaveBank::isValidValueTree (bankState, error))
-        return false;
-    // Compare with the newest bank (one may be waiting for the audio thread to pick it up).
-    const auto reference = latestWaveBank();
-    const auto currentCycles = reference->toValueTree().getProperty ("cycles");
-    const auto requestedCycles = bankState.getProperty ("cycles");
-    const auto* currentData = currentCycles.getBinaryData();
-    const auto* requestedData = requestedCycles.getBinaryData();
-    if (currentData != nullptr && requestedData != nullptr && *currentData == *requestedData)
-        return true;
-
-    // Rebuilt right here (a few tens of ms on the calling thread) and handed to the audio thread,
-    // which swaps it in at the start of its next block. Loading presets in quick succession
-    // (browser arrow keys) therefore never fails with "import in progress".
-    auto rebuilt = std::make_shared<WaveBank> (*reference);
-    if (! rebuilt->restoreFromValueTree (bankState, error))
-        return false;
-    std::atomic_store (&pendingWaveBank, std::shared_ptr<const WaveBank> (std::move (rebuilt)));
+    for (size_t l = 0; l < 2; ++l)
+    {
+        staged[l] = l == 1 && trees[1] == trees[0] ? staged[0] : buildWaveBank (trees[l], error);
+        if (staged[l] == nullptr)
+            return false;
+    }
     return true;
+}
+
+bool SynthEngine::restoreWaveBankState (const juce::ValueTree& state, juce::String* error)
+{
+    std::array<WaveBankPtr, 2> staged;
+    if (! stageWaveBankState (state, staged, error))
+        return false;
+    setWaveBank (Layer::upper, staged[0]);
+    setWaveBank (Layer::lower, staged[1]);
+    return true;
+}
+
+void SynthEngine::collectGarbage()
+{
+    for (auto& bank : waveBanks)
+        bank.collect();
+    for (auto l : { Layer::upper, Layer::lower })
+        modMatrix (l).collectGarbage();
 }
 
 void SynthEngine::appendMidiInputState (juce::ValueTree& state) const
@@ -381,7 +572,7 @@ void SynthEngine::appendMidiInputState (juce::ValueTree& state) const
     state.addChild (input, -1, nullptr);
 }
 
-bool SynthEngine::restoreMidiInputState (const juce::ValueTree& state, juce::String* error)
+bool SynthEngine::restoreMidiInputState (const juce::ValueTree& state, juce::String* error, bool apply)
 {
     juce::ValueTree input;
     for (int i = 0; i < state.getNumChildren(); ++i)
@@ -396,6 +587,8 @@ bool SynthEngine::restoreMidiInputState (const juce::ValueTree& state, juce::Str
         }
     if (! input.isValid())
     {
+        if (! apply)
+            return true;
         lowerMpeMembers.store (0);
         upperMpeMembers.store (0);
         for (int channel = 0; channel < 16; ++channel)
@@ -407,6 +600,7 @@ bool SynthEngine::restoreMidiInputState (const juce::ValueTree& state, juce::Str
         pendingMidiLearnBinding.store (-1);
         for (auto& mapping : learnedCCBinding)
             mapping.store (-1);
+        midiLearnGeneration.fetch_add (1, std::memory_order_acq_rel);
         midiStateRefresh.store (true, std::memory_order_release);
         return true;
     }
@@ -470,6 +664,8 @@ bool SynthEngine::restoreMidiInputState (const juce::ValueTree& state, juce::Str
         }
     }
 
+    if (! apply)
+        return true;
     lowerMpeMembers.store (lowerMembers);
     upperMpeMembers.store (upperMembers);
     for (int channel = 0; channel < 16; ++channel)
@@ -480,8 +676,23 @@ bool SynthEngine::restoreMidiInputState (const juce::ValueTree& state, juce::Str
     }
     for (int cc = 0; cc < 128; ++cc)
         learnedCCBinding[(size_t) cc].store (learnedCCs[(size_t) cc]);
+    midiLearnGeneration.fetch_add (1, std::memory_order_acq_rel);
     midiStateRefresh.store (true, std::memory_order_release);
     return true;
+}
+
+bool SynthEngine::isLearnableController (int cc) noexcept
+{
+    // Bank select, (N)RPN / data entry, sustain and the channel mode messages keep their meaning:
+    // touching the pedal while a control waits for MIDI learn must not take it over.
+    switch (cc)
+    {
+        case 0: case 6: case 32: case 38: case 64:
+        case 96: case 97: case 98: case 99: case 100: case 101:
+            return false;
+        default:
+            return cc < 120;
+    }
 }
 
 int SynthEngine::findBinding (const juce::String& parameterId) const noexcept
@@ -513,6 +724,7 @@ void SynthEngine::clearMidiLearn (const juce::String& parameterId)
     }
     if (pendingMidiLearnBinding.load() == binding)
         pendingMidiLearnBinding.store (-1);
+    midiLearnGeneration.fetch_add (1, std::memory_order_acq_rel);
 }
 
 int SynthEngine::getMidiLearnCC (const juce::String& parameterId) const
@@ -644,9 +856,22 @@ void SynthEngine::updateChannelExpression (int channel) noexcept
     const float tuning = channelFineTune[index].load (std::memory_order_relaxed) / 100.0f
                        + channelCoarseTune[index].load (std::memory_order_relaxed);
     const bool mpe = isMpeMemberChannel (channel);
+    float zoneBend = 0.0f, zoneSensitivity = 2.0f;
+    if (mpe)
+    {
+        const int master = channel <= lowerMpeMembers.load (std::memory_order_relaxed) + 1 ? 1 : 16;
+        zoneBend = midiChannels[(size_t) (master - 1)].pitchBend;
+        zoneSensitivity = bendSensitivity[(size_t) (master - 1)].load (std::memory_order_relaxed);
+    }
     for (auto* synthLayer : { &upper, &lower })
         synthLayer->setMidiExpression (channel, bend, sensitivity, tuning,
-                                       midi.pressure, midi.timbre, mpe);
+                                       midi.pressure, midi.timbre, mpe, zoneBend, zoneSensitivity);
+}
+
+bool SynthEngine::isMpeMasterChannel (int channel) const noexcept
+{
+    return (channel == 1 && lowerMpeMembers.load (std::memory_order_relaxed) > 0)
+        || (channel == 16 && upperMpeMembers.load (std::memory_order_relaxed) > 0);
 }
 
 void SynthEngine::handleRpnDataEntry (int channel, bool lsbUpdated) noexcept
@@ -665,11 +890,30 @@ void SynthEngine::handleRpnDataEntry (int channel, bool lsbUpdated) noexcept
             channelCoarseTune[index].store ((float) (midi.dataEntryMsb - 64));
         else if (midi.rpnLsb == 6 && ! lsbUpdated)
         {
+            // MPE Configuration Message. Per the MPE spec the zone's member channels default to a
+            // 48 semitone bend range and its master channel to 2 (both can be changed by RPN 0 later).
             const int members = juce::jlimit (0, 15, midi.dataEntryMsb);
+            int first = 0, last = -1;
             if (channel == 1)
-                lowerMpeMembers.store (juce::jmin (members, 15 - upperMpeMembers.load (std::memory_order_relaxed)));
+            {
+                const int count = juce::jmin (members, 15 - upperMpeMembers.load (std::memory_order_relaxed));
+                lowerMpeMembers.store (count);
+                first = 2;
+                last = count + 1;
+            }
             else if (channel == 16)
-                upperMpeMembers.store (juce::jmin (members, 15 - lowerMpeMembers.load (std::memory_order_relaxed)));
+            {
+                const int count = juce::jmin (members, 15 - lowerMpeMembers.load (std::memory_order_relaxed));
+                upperMpeMembers.store (count);
+                first = 16 - count;
+                last = 15;
+            }
+            if (channel == 1 || channel == 16)
+            {
+                bendSensitivity[(size_t) (channel - 1)].store (2.0f);
+                for (int member = first; member <= last; ++member)
+                    bendSensitivity[(size_t) (member - 1)].store (48.0f);
+            }
             for (int ch = 1; ch <= 16; ++ch)
                 updateChannelExpression (ch);
             return;
@@ -688,7 +932,7 @@ void SynthEngine::handleRpnDataEntry (int channel, bool lsbUpdated) noexcept
     updateChannelExpression (channel);
 }
 
-bool SynthEngine::requestWaveImport (int slot, const juce::File& file, juce::String* error)
+bool SynthEngine::requestWaveImport (Layer l, int slot, const juce::File& file, juce::String* error)
 {
     if (! juce::isPositiveAndBelow (slot, WaveBank::kNumAltWaves))
     {
@@ -710,15 +954,13 @@ bool SynthEngine::requestWaveImport (int slot, const juce::File& file, juce::Str
         if (error) *error = "A wavetable import is already in progress.";
         return false;
     }
-    std::atomic_store (&retiredWaveBank, std::shared_ptr<const WaveBank> {});
 
-    const auto base = std::atomic_load (&waveBank);
     const auto extension = file.getFileExtension().toLowerCase();
     {
         const std::lock_guard<std::mutex> lock (waveImportMutex);
         waveImportError.clear();
     }
-    waveImportPool.addJob (new WaveImportJob ([this, base, slot, file, extension]
+    waveImportPool.addJob (new WaveImportJob ([this, l, slot, file, extension]
     {
         std::vector<float> cycle;
         juce::String failure;
@@ -732,9 +974,11 @@ bool SynthEngine::requestWaveImport (int slot, const juce::File& file, juce::Str
 
         if (loaded)
         {
-            auto rebuilt = std::make_shared<WaveBank> (*base);
+            // Based on the newest bank of the layer, so a preset loaded meanwhile is not undone.
+            auto rebuilt = std::make_shared<WaveBank> (*getWaveBank (l));
             rebuilt->setAltCycle (slot, cycle.data());
-            std::atomic_store (&pendingWaveBank, std::shared_ptr<const WaveBank> (std::move (rebuilt)));
+            setWaveBank (l, std::move (rebuilt));
+            waveImportState.store (WaveImportState::ready);
             return;
         }
 
@@ -747,21 +991,28 @@ bool SynthEngine::requestWaveImport (int slot, const juce::File& file, juce::Str
     return true;
 }
 
+void SynthEngine::acknowledgeWaveImport() noexcept
+{
+    auto state = waveImportState.load();
+    while (state == WaveImportState::ready || state == WaveImportState::failed)
+        if (waveImportState.compare_exchange_weak (state, WaveImportState::idle))
+            break;
+}
+
 juce::String SynthEngine::getWaveImportError() const
 {
     const std::lock_guard<std::mutex> lock (waveImportMutex);
     return waveImportError;
 }
 
-bool SynthEngine::exportWave (int slot, const juce::File& file, juce::String* error) const
+bool SynthEngine::exportWave (Layer l, int slot, const juce::File& file, juce::String* error) const
 {
     if (! juce::isPositiveAndBelow (slot, WaveBank::kNumAltWaves))
     {
         if (error) *error = "Alternative wave slot must be in the range 1..32.";
         return false;
     }
-    const auto bank = std::atomic_load (&waveBank);
-    return WaveBank::writeWs6 (file.withFileExtension (".ws6"), bank->altCycle (slot), error);
+    return WaveBank::writeWs6 (file.withFileExtension (".ws6"), getWaveBank (l)->altCycle (slot), error);
 }
 
 void SynthEngine::routeNote (const juce::MidiMessage& m, bool on)
@@ -816,6 +1067,10 @@ void SynthEngine::handleMidi (const juce::MidiMessage& m)
         midiChannels[(size_t) (channel - 1)].pitchBend =
             juce::jlimit (-1.0f, 1.0f, (float) (m.getPitchWheelValue() - 8192) / 8192.0f);
         updateChannelExpression (channel);
+        if (isMpeMasterChannel (channel))   // the zone's master bend moves every note of the zone
+            for (int member = 2; member <= 15; ++member)
+                if (isMpeMemberChannel (member))
+                    updateChannelExpression (member);
     }
     else if (m.isAftertouch())
     {
@@ -916,7 +1171,7 @@ void SynthEngine::handleMidi (const juce::MidiMessage& m)
         }
 
         int learned = learnedCCBinding[(size_t) cc].load (std::memory_order_acquire);
-        if (learned < 0)
+        if (learned < 0 && isLearnableController (cc))
         {
             const int pending = pendingMidiLearnBinding.exchange (-1, std::memory_order_acq_rel);
             if (pending >= 0)
@@ -928,6 +1183,7 @@ void SynthEngine::handleMidi (const juce::MidiMessage& m)
                 }
                 learned = pending;
                 learnedCCBinding[(size_t) cc].store (learned, std::memory_order_release);
+                midiLearnGeneration.fetch_add (1, std::memory_order_acq_rel);
             }
         }
         if (learned >= 0)
@@ -935,10 +1191,9 @@ void SynthEngine::handleMidi (const juce::MidiMessage& m)
         else if (perf.hardwareCCMap)
             applyHardwareController (channel, cc, v, 127);
     }
-    else if (m.isAllNotesOff())
+    else if (m.isProgramChange())
     {
-        upper.allNotesOff (false);
-        lower.allNotesOff (false);
+        pendingProgramChange.store (m.getProgramChangeNumber(), std::memory_order_release);
     }
 }
 } // namespace nsynth

@@ -48,6 +48,16 @@ CardLayout layoutFor (FxModule module)
 }
 
 constexpr int kMaxCellHeight = 104, kMaxCellWidth = 92;
+
+// Parameters the card's curve is drawn from (it repaints when one of them changes).
+const std::vector<const char*>& curveParameters (FxModule module)
+{
+    static const std::vector<const char*> eq { pid::eqLowFreq, pid::eqLowGain, pid::eqMidFreq, pid::eqMidGain,
+                                               pid::eqMidQ, pid::eqHighFreq, pid::eqHighGain };
+    static const std::vector<const char*> distortion { pid::distType, pid::distDrive };
+    static const std::vector<const char*> none;
+    return module == FxModule::eq ? eq : module == FxModule::distortion ? distortion : none;
+}
 } // namespace
 
 //==============================================================================
@@ -55,6 +65,11 @@ FxCard::FxCard (juce::AudioProcessorValueTreeState& s, SynthEngine& e, Layer l, 
                 const ControlFactory& makeControl, const SwitchedCellRegistrar& registerSwitched)
     : state (s), engine (e), layer (l), module (m), accent (a)
 {
+    // A click on the card takes the keyboard focus away from the last knob.
+    setWantsKeyboardFocus (true);
+    for (auto* suffix : curveParameters (m))
+        curveValues.push_back (state.getRawParameterValue (layerParamId (l, suffix)));
+    shownCurve.assign (curveValues.size(), 0.0f);
     const auto layout = layoutFor (m);
     columns = layout.columns;
     if (layout.power != nullptr)
@@ -76,7 +91,9 @@ FxCard::FxCard (juce::AudioProcessorValueTreeState& s, SynthEngine& e, Layer l, 
             if (mode != 0)
                 chorusLastMode = mode;
             const int next = mode != 0 ? 0 : chorusLastMode;
+            parameter->beginChangeGesture();
             parameter->setValueNotifyingHost (parameter->convertTo0to1 ((float) next));
+            parameter->endChangeGesture();
         };
         addAndMakeVisible (chorusPower);
     }
@@ -149,14 +166,11 @@ void FxCard::refresh()
         dirty |= std::abs (reduction - shownReduction) > 0.05f;
         shownReduction = reduction;
     }
-    else if (module == FxModule::eq || module == FxModule::distortion)
+    for (size_t i = 0; i < curveValues.size(); ++i)
     {
-        std::vector<float> values;
-        for (auto* suffix : { pid::eqLowFreq, pid::eqLowGain, pid::eqMidFreq, pid::eqMidGain, pid::eqMidQ, pid::eqHighFreq,
-                              pid::eqHighGain, pid::distType, pid::distDrive })
-            values.push_back (raw (suffix));
-        dirty |= values != shownEq;
-        shownEq = std::move (values);
+        const float value = curveValues[i]->load();
+        dirty |= ! juce::exactlyEqual (value, shownCurve[i]);
+        shownCurve[i] = value;
     }
     if (dirty)
         repaint();
@@ -241,11 +255,14 @@ void FxCard::paintEqCurve (juce::Graphics& g, juce::Rectangle<float> area) const
     }
     ThreeBandEq::Settings s { raw (pid::eqLowFreq), raw (pid::eqLowGain), raw (pid::eqMidFreq), raw (pid::eqMidGain),
                               raw (pid::eqMidQ), raw (pid::eqHighFreq), raw (pid::eqHighGain) };
+    // The response at the processor's rate (the bands bend towards Nyquist), 48 kHz before prepare.
+    const double processorRate = state.processor.getSampleRate();
+    const double sampleRate = processorRate > 0.0 ? processorRate : 48000.0;
     juce::Path path;
     for (int i = 0; i <= 160; ++i)
     {
         const double hz = 20.0 * std::pow (1000.0, (double) i / 160.0);
-        const float db = juce::jlimit (-18.0f, 18.0f, ThreeBandEq::responseDb (s, hz, 48000.0));
+        const float db = juce::jlimit (-18.0f, 18.0f, ThreeBandEq::responseDb (s, hz, sampleRate));
         const juce::Point<float> p (plot.getX() + plot.getWidth() * (float) i / 160.0f, plot.getCentreY() - db / 18.0f * plot.getHeight() * 0.5f);
         if (i == 0) path.startNewSubPath (p);
         else        path.lineTo (p);
@@ -338,6 +355,7 @@ FxPage::FxPage (juce::AudioProcessorValueTreeState& state, SynthEngine& e, Layer
                 const ControlFactory& makeControl, const SwitchedCellRegistrar& registerSwitched)
     : engine (e), layer (l)
 {
+    setWantsKeyboardFocus (true);
     for (int m = 0; m < ModMatrixData::kFxModules; ++m)
     {
         auto& card = cards[(size_t) m];

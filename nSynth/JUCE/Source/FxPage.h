@@ -44,7 +44,8 @@ private:
     int chainPosition { 0 }, columns { 4 };
     bool dropHover { false }, shownOn { true };
     float shownReduction { 0.0f };
-    std::vector<float> shownEq;
+    std::vector<std::atomic<float>*> curveValues;   // EQ / distortion curve parameters, sized once
+    std::vector<float> shownCurve;
     std::unique_ptr<ParamControl> power;          // none for the chorus (its MODE has an Off position)
     juce::ToggleButton chorusPower;
     int chorusLastMode { 1 };

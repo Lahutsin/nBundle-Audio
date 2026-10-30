@@ -4,65 +4,12 @@
 #include <functional>
 #include "PluginProcessor.h"
 #include "PresetBrowser.h"
+#include "PresetDisplay.h"
+#include "NSynthLookAndFeel.h"
 #include "EditorComponents.h"
 #include "ModulationUi.h"
 #include "FxPage.h"
-
-// The 32 alternative waveforms as tiles (number, cycle, name); click selects one.
-class WaveSlotGrid : public juce::Component
-{
-public:
-    explicit WaveSlotGrid (nsynth::SynthEngine& engine);
-    void paint (juce::Graphics&) override;
-    void mouseDown (const juce::MouseEvent&) override;
-    int getSelected() const noexcept { return selected; }
-    std::function<void (int)> onSelect;
-
-    static constexpr int kColumns = 4;
-
-private:
-    juce::Rectangle<int> tileBounds (int slot) const noexcept;
-    nsynth::SynthEngine& engine;
-    int selected { 0 };
-};
-
-class WaveBrowserPage : public juce::Component,
-                        private juce::Timer
-{
-public:
-    explicit WaveBrowserPage (nsynth::SynthEngine& engine);
-    void paint (juce::Graphics&) override;
-    void resized() override;
-    std::function<void()> onClose;
-
-private:
-    void timerCallback() override;
-    nsynth::SynthEngine& engine;
-    WaveSlotGrid slots;
-    juce::Rectangle<int> preview;
-    juce::TextButton importButton { "IMPORT..." }, exportButton { "EXPORT .WS6..." }, closeButton { "CLOSE" };
-    juce::Label status;
-    std::unique_ptr<juce::FileChooser> chooser;
-};
-
-// Header preset display: shows what is loaded (performance or the selected layer's patch) and
-// opens the preset browser when clicked.
-class PresetDisplay : public juce::Component,
-                      public juce::SettableTooltipClient
-{
-public:
-    void setContent (const juce::String& tag, const juce::String& name, const juce::String& detail, juce::Colour accent);
-    void paint (juce::Graphics&) override;
-    void mouseDown (const juce::MouseEvent&) override { if (onClick) onClick(); }
-    void mouseEnter (const juce::MouseEvent&) override { repaint(); }
-    void mouseExit (const juce::MouseEvent&) override { repaint(); }
-    std::function<void()> onClick;
-    juce::String getPresetName() const { return name; }
-
-private:
-    juce::String tag, name, detail;
-    juce::Colour accent;
-};
+#include "WaveBrowserPage.h"
 
 class NSynthAudioProcessorEditor : public juce::AudioProcessorEditor,
                                    public juce::DragAndDropContainer,
@@ -75,6 +22,8 @@ public:
 
     void paint (juce::Graphics&) override;
     void resized() override;
+    // Shortcuts: Cmd/Ctrl+Z undo, Cmd/Ctrl+Shift+Z or Cmd/Ctrl+Y redo, Cmd/Ctrl+Left/Right previous / next preset.
+    bool keyPressed (const juce::KeyPress&) override;
 
     // The layer pages: SYNTH (sound sources, filters, envelopes, voicing, macros), MOD (MSEGs and
     // the modulation slots) and FX (the effect chain).
@@ -100,6 +49,13 @@ public:
     void updateSwitchedControls();
     // Modulation rings of the shown layer's knobs.
     void updateModulationDisplay();
+    // Segment buttons, captions and MIDI CCs of the controls on the shown page and the performance strip.
+    void refreshControls();
+    void undo();
+    void redo();
+    juce::Button& getUndoButton() noexcept { return undoButton; }
+    juce::Button& getRedoButton() noexcept { return redoButton; }
+    juce::Button& getQualityButton() noexcept { return *qualityButton; }
 
     // ModulationHost
     bool canModulate (nsynth::Layer layer, int parameterIndex) const override;
@@ -115,7 +71,7 @@ private:
         std::array<std::vector<std::unique_ptr<SectionPanel>>, 3> rows;
         std::unique_ptr<ModPage> modPage;
         std::unique_ptr<FxPage> fxPage;
-        std::vector<ParamControl*> controls;   // every control of the layer (modulation rings)
+        std::array<std::vector<ParamControl*>, 3> pageControls;   // the layer's controls per Page
     };
 
     struct SwitchedCell
@@ -132,14 +88,24 @@ private:
     void configureMidiLearn (ParamControl& control);
     void layoutContent();
     void updatePageVisibility();
+    void updateUndoButtons();
+    void updateQualityButton();
+    void showQualityMenu();
+    void stepPreset (int delta);
+    // Runs `change` (which replaces the target layer), after a confirmation when that layer has unsaved edits.
+    void confirmLayerChange (nsynth::Layer target, const juce::String& title, const juce::String& question,
+                             const juce::String& confirmText, std::function<void()> change);
     void savePresetAs (nSynth::PresetKind kind);
+    void writePreset (bool patch, nsynth::Layer layer, const juce::File& file);
 
     NSynthAudioProcessor& synth;
     NSynthLookAndFeel lnf;
     juce::Component content;
     float scale { 1.0f };
     uint32_t lastMidiParameterDrops { 0 };
+    int midiWarningTicks { 0 };   // refresh ticks the MIDI overflow warning stays up
     int timerTicks { 0 };
+    Page buildingPage { Page::synth };   // the page whose controls makeControl() is creating
 
     std::array<LayerUi, 2> layers;
     std::vector<SwitchedCell> switchedCells;
@@ -153,12 +119,15 @@ private:
     juce::TextButton initLayer { "INIT" }, copyUpToLow { "COPY U>L" }, copyLowToUp { "COPY L>U" };
     juce::TextButton loadPatch { "LOAD PATCH" }, savePatch { "SAVE PATCH" }, comparePatch { "COMPARE" };
     juce::TextButton synthTab { "SYNTH" }, modTab { "MOD" }, fxTab { "FX" }, waveBrowserButton { "WAVE BANK" };
+    juce::TextButton undoButton { "UNDO" }, redoButton { "REDO" };
+    juce::TextButton* qualityButton { nullptr };   // in the performance strip's title row
     juce::ComboBox sizeBox;
     std::unique_ptr<WaveBrowserPage> waveBrowserPage;
     std::unique_ptr<PresetBrowser> presetBrowser;
     std::unique_ptr<SectionPanel> performancePanel;
     std::unique_ptr<juce::FileChooser> chooser;
     juce::TooltipWindow tooltipWindow { this, 600 };
+    juce::ScopedMessageBox messageBox;   // closes an open confirmation with the editor
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (NSynthAudioProcessorEditor)
 };

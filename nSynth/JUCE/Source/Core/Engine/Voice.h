@@ -1,6 +1,7 @@
 #pragma once
 
 #include "LayerSnapshot.h"
+#include "../DSP/FastMath.h"
 #include "ModMatrix.h"
 #include "../DSP/Dds1.h"
 #include "../DSP/Dds2.h"
@@ -65,6 +66,7 @@ public:
     static constexpr float kOutputGain = 0.6f;
 
     void prepare (double internalSampleRate, const WaveBank* bank, uint32_t seed);
+    static void initialiseStaticTables();   // see SynthLayer::initialiseStaticTables()
     void setSampleRate (double internalSampleRate);
     void setWaveBank (const WaveBank* bank) noexcept { waveBank = bank; dds1.setWaveBank (bank); }
 
@@ -89,8 +91,9 @@ public:
     double getLfo1Phase() const noexcept { return lfo1.getPhase(); }
     float getCurrentPitch() const noexcept { return (float) currentPitch; }
     void setAftertouch (float v) noexcept { aftertouch = v; }
+    // zoneBend / zoneBendSensitivity: the MPE zone master channel's bend (member channels only).
     void setMidiExpression (float bend, float bendSensitivity, float tuning, float pressure, float timbre,
-                            bool mpeMember) noexcept
+                            bool mpeMember, float zoneBend = 0.0f, float zoneBendSensitivity = 2.0f) noexcept
     {
         midiPitchBend = bend;
         midiBendSensitivity = bendSensitivity;
@@ -98,6 +101,8 @@ public:
         channelPressure = pressure;
         midiTimbre = timbre;
         isMpeMember = mpeMember;
+        masterBend = zoneBend;
+        masterBendSensitivity = zoneBendSensitivity;
     }
     const std::array<float, ModMatrixData::sourceCount>& getLastModSources() const noexcept { return lastModSources; }
     // Normalised offset the matrix added to each modulated per-voice parameter in the last block
@@ -111,7 +116,7 @@ public:
 
     static float rangeOffset (Dds1Range r) noexcept;
     static float rangeOffset (Dds2Range r) noexcept;
-    static double noteToHz (double semitones) noexcept { return 440.0 * std::exp2 ((semitones - 69.0) / 12.0); }
+    static double noteToHz (double semitones) noexcept { return 440.0 * fastmath::exp2 ((semitones - 69.0) / 12.0); }
     static float portamentoSecondsPerOctave (float fader) noexcept { return 10.0f * fader * fader * fader; }
     static float triStateAmount (TriState t) noexcept { return t == TriState::off ? 0.0f : t == TriState::half ? 0.5f : 1.0f; }
     static float fastExp2 (float x) noexcept;
@@ -119,6 +124,11 @@ public:
     static constexpr float kLpfMaxHz = 25000.0f;      // top of the LPF CUTOFF range
 
 private:
+    // A stolen voice that is still sounding fades out over kStealFadeSeconds before it starts the
+    // new note from silence: jumping to another pitch, level, pan or detune at full level clicks.
+    static constexpr double kStealFadeSeconds = 0.004;
+    bool needsStealFade (const StartInfo& info) const noexcept;
+    void begin (const StartInfo& info, const LayerSnapshot& p, bool fromSilence);
     void applyEnvelopeSettings (const LayerSnapshot& p) noexcept;
     void triggerEnvelopes() noexcept;
     void restartMsegs (const LayerSnapshot& p, const std::array<double, 2>& freePhase) noexcept;
@@ -144,6 +154,7 @@ private:
     float midiPitchBend { 0.0f }, midiBendSensitivity { 2.0f }, channelTuning { 0.0f };
     float channelPressure { 0.0f }, midiTimbre { 0.0f };
     bool isMpeMember { false };
+    float masterBend { 0.0f }, masterBendSensitivity { 2.0f };
     float pitchOffset { 0.0f };
     float twinSign { 0.0f }, voiceGain { 1.0f }, unisonDetune { 0.0f };
     // double: per-sample glide steps (~1e-5 st) would be distorted by float rounding.
@@ -166,6 +177,9 @@ private:
     std::array<double, 2> msegPhase {};
     std::array<int, 2> msegHint {};
     float randomValue { 0.5f };   // per-note RANDOM source
+    bool stealPending { false };
+    StartInfo pendingStart;
+    float stealGain { 1.0f };
     float lastLfo1 { 0.0f }, lastLfo2 { 0.0f };
     bool lfo1Unipolar { false };
 };

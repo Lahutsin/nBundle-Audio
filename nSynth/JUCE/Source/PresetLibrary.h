@@ -41,6 +41,8 @@ public:
     void ensureScanned() { if (! scanned) rescan(); }
 
     const std::vector<PresetEntry>& getEntries() { ensureScanned(); return entries; }
+    // getEntries()[index].key(), built once per scan.
+    const juce::String& getKey (int index) const { return keys[(size_t) index]; }
     // Factory categories in their musical order, followed by user sub-folders.
     juce::StringArray getCategories (PresetKind kind);
     // Indices into getEntries(). category: empty = all, favouritesCategory, userCategory or a category name.
@@ -48,21 +50,34 @@ public:
     const PresetEntry* findByKey (const juce::String& key);
     int count (PresetKind kind, const juce::String& category);
 
-    bool isFavourite (const PresetEntry& entry) const { return favourites.contains (entry.key()); }
-    void setFavourite (const PresetEntry& entry, bool shouldBeFavourite);
+    bool isFavourite (const PresetEntry& entry) const { return favourites.contains (favouriteKey (entry)); }
+    bool isFavourite (int index) const { return favouriteFlags[(size_t) index]; }
+    // Re-reads Favourites.xml first (another plug-in instance may have changed it), applies this
+    // change and writes the file atomically. Returns false when it could not be written.
+    bool setFavourite (const PresetEntry& entry, bool shouldBeFavourite);
+    // The key stored in Favourites.xml: user presets relative to the user folder, so the
+    // favourites survive moving it.
+    juce::String favouriteKey (const PresetEntry& entry) const;
 
     juce::File getUserDirectory (PresetKind kind) const;
+    // The embedded factory presets, sorted (any thread; built once per process).
+    static const std::vector<PresetEntry>& getFactoryEntries();
     // "03_Arc_Runner" -> "Arc Runner"
     static juce::String displayNameFromFileName (const juce::String& fileStem);
 
 private:
     void addFactoryEntries();
     void addUserEntries (PresetKind kind);
+    bool matches (const PresetEntry& entry, size_t index, PresetKind kind, const juce::String& category,
+                  const juce::StringArray& words) const;
     void loadFavourites();
-    void saveFavourites() const;
+    bool saveFavourites() const;
+    void updateFavouriteFlags();
 
     juce::File userRoot;
     std::vector<PresetEntry> entries;
+    std::vector<juce::String> keys;
+    std::vector<bool> favouriteFlags;
     juce::StringArray favourites;
     bool scanned { false };
 };

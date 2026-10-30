@@ -1,4 +1,5 @@
 #include "Lfo.h"
+#include "FastMath.h"
 
 namespace nsynth
 {
@@ -10,7 +11,7 @@ float Lfo::shapeValue (LfoShape s, double p, float heldValue) noexcept
         case LfoShape::revSaw:     return (float) (1.0 - p);
         case LfoShape::sampleHold: return heldValue;
         case LfoShape::square:     return p < 0.5 ? 1.0f : 0.0f;
-        case LfoShape::sine:       return (float) std::sin (juce::MathConstants<double>::twoPi * p);
+        case LfoShape::sine:       return (float) fastmath::sin2pi (p);
         case LfoShape::saw:        return (float) p;
         case LfoShape::noise:      return heldValue;
     }
@@ -60,8 +61,9 @@ float Lfo::process (double rateHz, LfoShape shape, juce::Random& rng) noexcept
 
 namespace rates
 {
-double lowFrequencyHz (float fader) noexcept { return 0.05 * std::pow (600.0, (double) juce::jlimit (0.0f, 1.0f, fader)); }
-double highFrequencyHz (float fader) noexcept { return 20.0 * std::pow (1000.0, (double) juce::jlimit (0.0f, 1.0f, fader)); }
+// 0.05 x 600^fader and 20 x 1000^fader (per sample while modulated).
+double lowFrequencyHz (float fader) noexcept { return 0.05 * fastmath::exp2 (9.228818690495881 * (double) juce::jlimit (0.0f, 1.0f, fader)); }
+double highFrequencyHz (float fader) noexcept { return 20.0 * fastmath::exp2 (9.965784284662087 * (double) juce::jlimit (0.0f, 1.0f, fader)); }
 double hfTrackRatio (float fader) noexcept { return std::pow (2.0, ((double) juce::jlimit (0.0f, 1.0f, fader) - 0.5) * 8.0); }
 double dds2LfoHz (float tune) noexcept { return 0.1 * std::pow (1000.0, ((double) juce::jlimit (-7.0f, 7.0f, tune) + 7.0) / 14.0); }
 

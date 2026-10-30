@@ -2,6 +2,8 @@
 
 namespace nsynth
 {
+std::atomic<int> VoiceRenderPool::processWorkers { 0 };
+
 class VoiceRenderPool::Worker final : public juce::Thread
 {
 public:
@@ -10,17 +12,8 @@ public:
     {
     }
 
-    void dispatch (void* taskContext, RenderFunction taskFunction) noexcept
-    {
-        context = taskContext;
-        function = taskFunction;
-        indexedMode = false;
-        wake.signal();
-    }
-
     void dispatchIndexed() noexcept
     {
-        indexedMode = true;
         wake.signal();
     }
 
@@ -38,24 +31,21 @@ private:
         {
             wake.wait();
             if (threadShouldExit())
+            {
+                token = {};   // a workgroup is left on the thread that joined it
                 return;
-
-            if (indexedMode)
-            {
-                const int count = owner.totalItemCount;
-                void* ctx = owner.activeContext;
-                auto fn = owner.activeIndexedFunction;
-                for (;;)
-                {
-                    const int item = owner.nextItemIndex.fetch_add (1, std::memory_order_relaxed);
-                    if (item >= count)
-                        break;
-                    fn (ctx, item, laneIndex);
-                }
             }
-            else if (function != nullptr)
+
+            joinCurrentWorkgroup();
+            const int count = owner.totalItemCount;
+            void* ctx = owner.activeContext;
+            auto fn = owner.activeIndexedFunction;
+            for (;;)
             {
-                function (context, laneIndex);
+                const int item = owner.nextItemIndex.fetch_add (1, std::memory_order_relaxed);
+                if (item >= count)
+                    break;
+                fn (ctx, item, laneIndex);
             }
 
             if (owner.remainingWorkers.fetch_sub (1, std::memory_order_acq_rel) == 1)
@@ -63,12 +53,27 @@ private:
         }
     }
 
+    void joinCurrentWorkgroup()
+    {
+        const auto generation = owner.workgroupGeneration.load (std::memory_order_acquire);
+        if (generation == joinedGeneration)
+            return;
+        joinedGeneration = generation;
+        token = {};
+        juce::AudioWorkgroup group;
+        {
+            const juce::SpinLock::ScopedLockType lock (owner.workgroupLock);
+            group = owner.workgroup;
+        }
+        if (group)
+            group.join (token);
+    }
+
     VoiceRenderPool& owner;
     const int laneIndex;
     juce::WaitableEvent wake;
-    void* context { nullptr };
-    RenderFunction function { nullptr };
-    bool indexedMode { false };
+    juce::WorkgroupToken token;
+    uint32_t joinedGeneration { 0 };
 };
 
 VoiceRenderPool::VoiceRenderPool() = default;
@@ -78,40 +83,47 @@ VoiceRenderPool::~VoiceRenderPool()
     stopWorkers();
 }
 
-void VoiceRenderPool::prepare (int requestedWorkers)
+void VoiceRenderPool::prepare (int requestedWorkers, int blockSize, double sampleRate)
 {
     stopWorkers();
 
-    const int cpuCount = juce::SystemStats::getNumCpus();
-    const int workerCount = requestedWorkers < 0 ? cpuCount - 1 : requestedWorkers;
-    const int boundedCount = juce::jlimit (0, 19, workerCount);
+    const int budget = juce::jmax (0, juce::SystemStats::getNumCpus() - 1);
+    const int wanted = juce::jlimit (0, 19, requestedWorkers < 0 ? budget : requestedWorkers);
+    // Explicit requests (tests, tools) are honoured; automatic ones share the process budget.
+    int granted = wanted;
+    if (requestedWorkers < 0)
+    {
+        int used = processWorkers.load();
+        do
+            granted = juce::jmin (wanted, juce::jmax (0, budget - used));
+        while (! processWorkers.compare_exchange_weak (used, used + granted));
+    }
+    else
+    {
+        processWorkers.fetch_add (granted);
+    }
 
-    workers.reserve ((size_t) boundedCount);
-    for (int i = 0; i < boundedCount; ++i)
+    const auto options = juce::Thread::RealtimeOptions{}
+                             .withPriority (8)
+                             .withApproximateAudioProcessingTime (juce::jmax (16, blockSize), juce::jmax (8000.0, sampleRate));
+    workers.reserve ((size_t) granted);
+    for (int i = 0; i < granted; ++i)
     {
         auto worker = std::make_unique<Worker> (*this, i + 1);
-        if (! worker->startThread (juce::Thread::Priority::highest))
+        if (! worker->startRealtimeThread (options) && ! worker->startThread (juce::Thread::Priority::highest))
             break;
         workers.push_back (std::move (worker));
     }
+    processWorkers.fetch_sub (granted - (int) workers.size());
 }
 
-void VoiceRenderPool::render (int workerCount, void* context, RenderFunction function) noexcept
+void VoiceRenderPool::setWorkgroup (const juce::AudioWorkgroup& newWorkgroup)
 {
-    jassert (workerCount >= 0 && workerCount <= getNumWorkers());
-    if (workerCount <= 0)
     {
-        function (context, 0);
-        return;
+        const juce::SpinLock::ScopedLockType lock (workgroupLock);
+        workgroup = newWorkgroup;
     }
-
-    remainingWorkers.store (workerCount, std::memory_order_release);
-    for (int i = 0; i < workerCount; ++i)
-        workers[(size_t) i]->dispatch (context, function);
-
-    function (context, 0);
-    while (remainingWorkers.load (std::memory_order_acquire) != 0)
-        completed.wait();
+    workgroupGeneration.fetch_add (1, std::memory_order_acq_rel);
 }
 
 void VoiceRenderPool::renderItems (int itemCount, int workerCount, void* context, IndexedFunction function) noexcept
@@ -152,7 +164,7 @@ void VoiceRenderPool::stopWorkers()
 {
     for (auto& worker : workers)
         worker->stop();
+    processWorkers.fetch_sub ((int) workers.size());
     workers.clear();
 }
 } // namespace nsynth
-
