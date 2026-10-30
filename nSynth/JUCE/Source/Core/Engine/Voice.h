@@ -9,6 +9,7 @@
 #include "../DSP/Lfo.h"
 #include "../DSP/VoiceFilter.h"
 #include "../DSP/Filter2.h"
+#include "../DSP/Halfband.h"
 
 namespace nsynth
 {
@@ -59,7 +60,7 @@ public:
         float twinSign { 0.0f };      // binaural x2: -1 / +1 x BINAURAL DETUNE
         float detuneSemitones { 0.0f }; // unison spread of this stacked voice
         float gain { 1.0f };
-        std::array<double, 2> msegPhase {}; // layer clock phases for MSEG FREE mode
+        std::array<double, kMaxMsegs> msegPhase {}; // layer clock phases for MSEG FREE mode
     };
 
     // One full-level voice peaks around -5 dBFS; stacked chords are caught by the output limiter.
@@ -108,7 +109,7 @@ public:
     // Normalised offset the matrix added to each modulated per-voice parameter in the last block
     // (only the entries of ModMatrixData::modulated are current). For the editor's modulation rings.
     const std::array<float, kLayerParamCount>& getModOffsets() const noexcept { return modOffsets; }
-    float getMsegPhase (int index) const noexcept { return (float) msegPhase[(size_t) juce::jlimit (0, 1, index)]; }
+    float getMsegPhase (int index) const noexcept { return (float) msegPhase[(size_t) juce::jlimit (0, kMaxMsegs - 1, index)]; }
 
     // Exposed for tests / UI metering.
     const Envelope& getEnv1() const noexcept { return env1; }
@@ -121,6 +122,7 @@ public:
     static float triStateAmount (TriState t) noexcept { return t == TriState::off ? 0.0f : t == TriState::half ? 0.5f : 1.0f; }
     static float fastExp2 (float x) noexcept;
     static constexpr float kOpenStretchHz = 8000.0f;  // see openLadderCutoff()
+    static constexpr float kMaxLinearIndex = 8.0f;    // linear CROSS MOD at 1 (quadratic taper)
     static constexpr float kLpfMaxHz = 25000.0f;      // top of the LPF CUTOFF range
 
 private:
@@ -131,9 +133,10 @@ private:
     void begin (const StartInfo& info, const LayerSnapshot& p, bool fromSilence);
     void applyEnvelopeSettings (const LayerSnapshot& p) noexcept;
     void triggerEnvelopes() noexcept;
-    void restartMsegs (const LayerSnapshot& p, const std::array<double, 2>& freePhase) noexcept;
+    void restartMsegs (const LayerSnapshot& p, const std::array<double, kMaxMsegs>& freePhase) noexcept;
     float lfo1RateHz (const LayerSnapshot& p, float rateFader, const VoiceContext& ctx) const noexcept;
     float driftWalk (float& value, float& target, int& counter) noexcept;
+    float pitchNoise (size_t oscillator) noexcept;
     float openLadderCutoff (float hz) noexcept;
 
     double sampleRate { 44100.0 };
@@ -144,6 +147,7 @@ private:
     Dds2 dds2;
     VoiceFilter filter;
     Filter2 filter2;
+    HalfbandResampler upsampler, downsampler; // the VCF and FILTER 2 run at twice the voice rate
     Envelope env1, env2, fixedEnv;
     Lfo lfo1, lfo2;
     DelayRamp lfo1Ramp, lfo2Ramp;
@@ -164,18 +168,40 @@ private:
     float panL { 0.70710678f }, panR { 0.70710678f };
     uint64_t age { 0 };
     float envTimeScale { 1.0f };
-    float lastDds1 { 0.0f }, delayedDds1 { 0.0f };
+    float lastDds1 { 0.0f };
+    std::array<float, Dds2::kLatency> dds1Delay {}; // aligns DDS1 with the BLEP-delayed DDS2
+    int dds1DelayIndex { 0 };
     float openTopHz { 25000.0f }, openExponent { 1.0f }, stretchInput { -1.0f }, stretchOutput { 0.0f };
 
     // drift random walks: dds1 pitch, dds2 pitch, cutoff
     float driftValue[3] {}, driftTarget[3] {};
     int driftCounter[3] {};
 
+    // ANALOG: this voice's component tolerances (-1..1, scaled by ANALOG), fixed per voice slot
+    // like the parts of a voice card, and the oscillators' 1/f pitch noise.
+    struct Tolerances
+    {
+        float dds1Tune { 0.0f }, dds2Tune { 0.0f }, cutoff { 0.0f }, resonance { 0.0f }, level { 0.0f }, envelope { 0.0f };
+    };
+    static constexpr float kTuneSpreadCents = 4.0f, kCutoffSpreadOctaves = 0.12f, kResonanceSpread = 0.06f,
+                           kLevelSpreadDb = 0.4f, kEnvelopeSpread = 0.08f, kPitchNoiseCents = 1.5f;
+    static constexpr std::array<double, 3> kPitchNoiseBandsHz { 1.5, 7.0, 35.0 };
+    // The pitch noise is band-limited to tens of Hz: it is computed every kNoiseInterval samples
+    // and interpolated linearly in between.
+    static constexpr int kNoiseInterval = 16;
+    Tolerances tolerance;
+    uint32_t noiseState { 1 };
+    std::array<std::array<float, 3>, 2> noiseBands {};  // per oscillator, one low-pass per band
+    std::array<float, 3> noiseCoefficient {}, noiseInputGain {};
+    std::array<float, 2> noiseFrom {}, noiseTo {};
+    int noiseCountdown { 0 };
+    float levelAnalog { 0.0f }, levelGain { 1.0f };      // ANALOG level offset, recomputed when ANALOG moves
+
     SmoothedValue sLpf, sHpf, sRes, sMix, sVcaEnv, sMorph, sDetune, sCross, sTune, sF2Cutoff;
     std::array<float, ModMatrixData::sourceCount> lastModSources {};
     std::array<float, kLayerParamCount> modOffsets {};
-    std::array<double, 2> msegPhase {};
-    std::array<int, 2> msegHint {};
+    std::array<double, kMaxMsegs> msegPhase {};
+    std::array<int, kMaxMsegs> msegHint {};
     float randomValue { 0.5f };   // per-note RANDOM source
     bool stealPending { false };
     StartInfo pendingStart;

@@ -1,4 +1,5 @@
 #include "Wavetables.h"
+#include "FastMath.h"
 #include <juce_audio_formats/juce_audio_formats.h>
 #include <juce_dsp/juce_dsp.h>
 
@@ -9,6 +10,28 @@ namespace
 constexpr int N = MipWavetable::kTableSize;
 constexpr int kFftOrder = 12;
 static_assert ((1 << kFftOrder) == N);
+
+// 2048 / sqrt(2)^level rounded down, then every count down to a single harmonic.
+constexpr int kLevelHarmonics[MipWavetable::kNumLevels] = { 2048, 1448, 1024, 724, 512, 362, 256, 181, 128, 90, 64,
+                                                            45, 32, 22, 16, 11, 8, 6, 4, 3, 2, 1 };
+
+const std::array<double, MipWavetable::kNumLevels> kLevelOctaves = []
+{
+    std::array<double, MipWavetable::kNumLevels> octaves {};
+    for (int level = 0; level < MipWavetable::kNumLevels; ++level)
+        octaves[(size_t) level] = std::log2 ((double) kLevelHarmonics[level]);
+    return octaves;
+}();
+
+float hermite (const std::vector<float>& t, int i, float frac) noexcept
+{
+    const float y0 = t[(size_t) i], y1 = t[(size_t) i + 1], y2 = t[(size_t) i + 2], y3 = t[(size_t) i + 3];
+    // 4-point, 3rd-order Hermite (x-form)
+    const float c1 = 0.5f * (y2 - y0);
+    const float c2 = y0 - 2.5f * y1 + 2.0f * y2 - 0.5f * y3;
+    const float c3 = 0.5f * (y3 - y0) + 1.5f * (y1 - y2);
+    return ((c3 * frac + c2) * frac + c1) * frac + y1;
+}
 
 // One alternative cycle as it is saved: peak-normalised 16-bit PCM.
 void quantiseCycle (const std::vector<float>& cycle, int16_t* out) noexcept
@@ -63,7 +86,7 @@ void inverseToTable (const std::vector<std::complex<float>>& harmonics, int maxH
 void MipWavetable::buildFromHarmonics (const std::vector<std::complex<float>>& harmonics, bool normalisePeak)
 {
     for (int level = 0; level < kNumLevels; ++level)
-        inverseToTable (harmonics, (kTableSize / 2) >> level, levels[(size_t) level]);
+        inverseToTable (harmonics, kLevelHarmonics[level], levels[(size_t) level]);
 
     if (normalisePeak)
     {
@@ -98,36 +121,58 @@ void MipWavetable::buildFromCycle (const float* cycle, int maxHarmonic, bool nor
     buildFromHarmonics (harmonics, normalisePeak);
 }
 
-int MipWavetable::levelForIncrement (double phaseIncrement) noexcept
+int MipWavetable::harmonicsAt (int level) noexcept
+{
+    return kLevelHarmonics[juce::jlimit (0, kNumLevels - 1, level)];
+}
+
+double MipWavetable::maxHarmonicFraction (double sampleRate) noexcept
+{
+    // Below 36.4 kHz nothing may fold back; 0.45 also keeps the top harmonic clear of Nyquist.
+    return juce::jlimit (0.45, 0.9, (sampleRate - 20000.0) / sampleRate);
+}
+
+MipWavetable::Blend MipWavetable::blendForIncrement (double phaseIncrement, double maxHarmonicFraction) noexcept
 {
     const double inc = std::abs (phaseIncrement);
     if (inc <= 0.0)
-        return 0;
+        return {};
 
-    const double needed = (double) (kTableSize / 2) * inc / (double) kMaxHarmonicFraction;
-    if (needed <= 1.0)
-        return 0;
+    // The brightest level whose top harmonic stays within the limit. The counts halve every two
+    // levels, so the octave estimate lands on it or next to it.
+    const double allowedOctaves = fastmath::log2 (maxHarmonicFraction / inc); // log2 of the highest playable harmonic
+    int level = juce::jlimit (0, kNumLevels - 1, (int) (2.0 * (kLevelOctaves[0] - allowedOctaves)));
+    while (level > 0 && kLevelOctaves[(size_t) level - 1] <= allowedOctaves)
+        --level;
+    while (level < kNumLevels - 1 && kLevelOctaves[(size_t) level] > allowedOctaves)
+        ++level;
+    if (level == kNumLevels - 1)
+        return { level, 1.0f };
 
-    int ilog = 0;
-    const double normalized = std::frexp (needed, &ilog);
-    const int level = normalized == 0.5 ? (ilog - 1) : ilog;
-    return juce::jlimit (0, kNumLevels - 1, level);
+    // Fade to the darker level over the last kFadeOctaves before this one reaches the limit:
+    // at the limit the darker level plays alone, exactly what follows once it takes over.
+    const double headroom = allowedOctaves - kLevelOctaves[(size_t) level];
+    return { level, (float) juce::jmin (1.0, headroom / kFadeOctaves) };
 }
 
 float MipWavetable::read (int level, double phase) const noexcept
 {
-    const auto& t = levels[(size_t) level];
     const double pos = phase * (double) kTableSize;
-    auto i = (int) pos;
-    const auto frac = (float) (pos - (double) i);
-    i &= (kTableSize - 1);
+    const auto i = (int) pos;
+    return hermite (levels[(size_t) level], i & (kTableSize - 1), (float) (pos - (double) i));
+}
 
-    const float y0 = t[(size_t) i], y1 = t[(size_t) i + 1], y2 = t[(size_t) i + 2], y3 = t[(size_t) i + 3];
-    // 4-point, 3rd-order Hermite (x-form)
-    const float c1 = 0.5f * (y2 - y0);
-    const float c2 = y0 - 2.5f * y1 + 2.0f * y2 - 0.5f * y3;
-    const float c3 = 0.5f * (y3 - y0) + 1.5f * (y1 - y2);
-    return ((c3 * frac + c2) * frac + c1) * frac + y1;
+float MipWavetable::read (const Blend& blend, double phase) const noexcept
+{
+    const double pos = phase * (double) kTableSize;
+    const auto i = (int) pos;
+    const auto frac = (float) (pos - (double) i);
+    const int index = i & (kTableSize - 1);
+    const float bright = hermite (levels[(size_t) blend.level], index, frac);
+    if (blend.weight >= 1.0f)
+        return bright;
+    const float dark = hermite (levels[(size_t) blend.level + 1], index, frac);
+    return dark + (bright - dark) * blend.weight;
 }
 
 //==============================================================================

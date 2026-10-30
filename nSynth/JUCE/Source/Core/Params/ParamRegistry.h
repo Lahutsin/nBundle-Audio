@@ -15,8 +15,12 @@ enum class Section
     dds1, dds2, mixer, ddsMod, vcf, vca, env1, env2, lfo1, perfControl,
     voiceAssign, fx, delay, reverb, performance,
     // Added in parameter version 2 (appended after every version 1 parameter).
-    macros, mseg1, mseg2, filter2, fxDistortion, fxEq, fxCompressor, fxPhaser, fxFlanger
+    macros, mseg, filter2, fxDistortion, fxEq, fxCompressor, fxPhaser, fxFlanger
 };
+
+// MSEGs per layer (the patch says how many exist, see ModMatrixData::msegCount).
+inline constexpr int kMaxMsegs = 16;
+enum class MsegField { mode = 0, sync, time, division };
 
 enum class Kind { floatParam, choiceParam, intParam, boolParam };
 
@@ -55,6 +59,8 @@ juce::String layerPrefix (Layer layer);
 juce::String layerParamId (Layer layer, const char* suffix);
 juce::String perfParamId (const char* suffix);
 juce::String sectionName (Section s);
+// Suffix of one MSEG's parameter: "mseg<N>_mode", "_sync", "_time" or "_div" (index 0 = MSEG 1).
+const char* msegSuffix (int index, MsegField field);
 
 juce::NormalisableRange<float> makeRange (const ParamSpec& spec);
 // makeRange() of every layer parameter, built once (getLayerParamSpecs() order).
@@ -230,6 +236,14 @@ namespace pid
     inline constexpr const char* flangerDepth = "flanger_depth";
     inline constexpr const char* flangerFeedback = "flanger_fb";
     inline constexpr const char* flangerMix = "flanger_mix";
+
+    // ---- version 3 -------------------------------------------------------------
+    inline constexpr const char* analog = "analog";
+    inline constexpr const char* crossModMode = "cross_mod_mode";
+
+    // ---- version 4 (and the parameters of MSEG 3..16, see msegSuffix()) ---------
+    inline constexpr const char* eqLowQ = "eq_low_q";
+    inline constexpr const char* eqHighQ = "eq_high_q";
 
     // performance
     inline constexpr const char* kbdMode = "kbd_mode";

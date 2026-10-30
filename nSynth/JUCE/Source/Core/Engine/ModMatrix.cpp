@@ -163,7 +163,8 @@ bool MsegShape::fromString (const juce::String& text, MsegShape& out)
 //==============================================================================
 ModMatrixData::ModMatrixData()
 {
-    msegs = { MsegShape::make (MsegShape::Preset::envelope), MsegShape::make (MsegShape::Preset::triangle) };
+    msegs.fill (MsegShape::make (MsegShape::Preset::triangle));
+    msegs[0] = MsegShape::make (MsegShape::Preset::envelope);
     fxOrder = defaultFxOrder();
     updateDerived();
 }
@@ -177,7 +178,7 @@ std::array<FxModule, ModMatrixData::kFxModules> ModMatrixData::defaultFxOrder() 
 
 bool ModMatrixData::sameContent (const ModMatrixData& o) const noexcept
 {
-    return slots == o.slots && macroNames == o.macroNames && msegs == o.msegs && fxOrder == o.fxOrder;
+    return slots == o.slots && macroNames == o.macroNames && msegs == o.msegs && msegCount == o.msegCount && fxOrder == o.fxOrder;
 }
 
 void ModMatrixData::updateDerived() noexcept
@@ -453,16 +454,61 @@ void ModMatrix::setMacroName (int macro, const juce::String& name)
 MsegShape ModMatrix::getMseg (int index) const noexcept
 {
     const std::lock_guard<std::recursive_mutex> edit (editLock);
-    return index >= 0 && index < 2 ? data.msegs[(size_t) index] : MsegShape {};
+    return index >= 0 && index < kMaxMsegs ? data.msegs[(size_t) index] : MsegShape {};
 }
 
 void ModMatrix::setMseg (int index, const MsegShape& shape)
 {
     const std::lock_guard<std::recursive_mutex> edit (editLock);
-    if (index < 0 || index >= 2 || ! shape.isValid())
+    if (index < 0 || index >= kMaxMsegs || ! shape.isValid())
         return;
     data.msegs[(size_t) index] = shape;
     publish();
+}
+
+int ModMatrix::getMsegCount() const noexcept
+{
+    const std::lock_guard<std::recursive_mutex> edit (editLock);
+    return data.msegCount;
+}
+
+int ModMatrix::addMseg()
+{
+    const std::lock_guard<std::recursive_mutex> edit (editLock);
+    if (data.msegCount >= kMaxMsegs)
+        return -1;
+    const int index = data.msegCount++;
+    data.msegs[(size_t) index] = MsegShape::make (MsegShape::Preset::triangle);
+    publish();
+    return index;
+}
+
+bool ModMatrix::removeMseg (int index)
+{
+    const std::lock_guard<std::recursive_mutex> edit (editLock);
+    if (index < 0 || index >= data.msegCount || data.msegCount <= 1)
+        return false;
+
+    // Its routes go (the remaining slots close the gap), later MSEGs' routes move down with them.
+    int kept = 0;
+    for (const auto& slot : data.slots)
+    {
+        const int mseg = slot.source >= 0 ? msegIndexOf ((ModSource) slot.source) : -1;
+        if (mseg == index)
+            continue;
+        auto moved = slot;
+        if (mseg > index)
+            moved.source = (int) msegSource (mseg - 1);
+        data.slots[(size_t) kept++] = moved;
+    }
+    for (int i = kept; i < ModMatrixData::kMaxSlots; ++i)
+        data.slots[(size_t) i] = {};
+
+    for (int m = index; m + 1 < data.msegCount; ++m)
+        data.msegs[(size_t) m] = data.msegs[(size_t) m + 1];
+    data.msegs[(size_t) --data.msegCount] = MsegShape::make (MsegShape::Preset::triangle);
+    publish();
+    return true;
 }
 
 std::array<FxModule, ModMatrixData::kFxModules> ModMatrix::getFxOrder() const noexcept
@@ -533,7 +579,8 @@ juce::ValueTree ModMatrix::toValueTree (int layerIndex) const
             node.setProperty ("name", juce::String (data.macroNames[(size_t) m].data()), nullptr);
             tree.addChild (node, -1, nullptr);
         }
-    for (int m = 0; m < 2; ++m)
+    tree.setProperty ("msegCount", data.msegCount, nullptr);
+    for (int m = 0; m < data.msegCount; ++m)
     {
         juce::ValueTree node ("MSEG");
         node.setProperty ("index", m, nullptr);
@@ -639,7 +686,7 @@ bool ModMatrix::restoreFromValueTree (const juce::ValueTree& tree, juce::String*
             else if (node.hasType ("MSEG"))
             {
                 const int index = (int) node.getProperty ("index", -1);
-                if (index < 0 || index >= 2 || ! MsegShape::fromString (node.getProperty ("points").toString(), candidate.msegs[(size_t) index]))
+                if (index < 0 || index >= kMaxMsegs || ! MsegShape::fromString (node.getProperty ("points").toString(), candidate.msegs[(size_t) index]))
                     return fail ("Modulation matrix contains an invalid MSEG shape.");
             }
             else if (node.hasType ("FX_CHAIN"))
@@ -662,6 +709,10 @@ bool ModMatrix::restoreFromValueTree (const juce::ValueTree& tree, juce::String*
             }
             // Other children (written by a newer version) are ignored.
         }
+        // Schema 3 patches always had two MSEGs.
+        candidate.msegCount = (int) tree.getProperty ("msegCount", 2);
+        if (candidate.msegCount < 1 || candidate.msegCount > kMaxMsegs)
+            return fail ("Modulation matrix contains an invalid number of MSEGs.");
     }
 
     data = candidate;
@@ -726,7 +777,9 @@ const char* ModMatrix::getSourceName (ModSource source) noexcept
     static constexpr const char* names[] = { "DDS2", "LFO2", "ENV1", "Velocity", "Poly Aftertouch", "Expression",
                                               "Ribbon", "Note Number", "Per-note Pitch", "Timbre (CC74)",
                                               "ENV2", "LFO1", "MSEG 1", "MSEG 2", "Mod Wheel", "Random",
-                                              "Macro 1", "Macro 2", "Macro 3", "Macro 4", "Macro 5", "Macro 6", "Macro 7", "Macro 8" };
+                                              "Macro 1", "Macro 2", "Macro 3", "Macro 4", "Macro 5", "Macro 6", "Macro 7", "Macro 8",
+                                              "MSEG 3", "MSEG 4", "MSEG 5", "MSEG 6", "MSEG 7", "MSEG 8", "MSEG 9", "MSEG 10",
+                                              "MSEG 11", "MSEG 12", "MSEG 13", "MSEG 14", "MSEG 15", "MSEG 16" };
     static_assert (std::size (names) == (size_t) ModSource::count);
     return inRange (source, ModMatrixData::sourceCount) ? names[(int) source] : "Invalid";
 }
@@ -735,7 +788,9 @@ const char* ModMatrix::getSourceShortName (ModSource source) noexcept
 {
     static constexpr const char* names[] = { "DDS2", "LFO2", "ENV1", "VEL", "AT", "EXPR", "RIBBON", "NOTE", "PITCH", "TIMBRE",
                                               "ENV2", "LFO1", "MSEG1", "MSEG2", "WHEEL", "RAND",
-                                              "M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8" };
+                                              "M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8",
+                                              "MSEG3", "MSEG4", "MSEG5", "MSEG6", "MSEG7", "MSEG8", "MSEG9", "MSEG10",
+                                              "MSEG11", "MSEG12", "MSEG13", "MSEG14", "MSEG15", "MSEG16" };
     static_assert (std::size (names) == (size_t) ModSource::count);
     return inRange (source, ModMatrixData::sourceCount) ? names[(int) source] : "?";
 }

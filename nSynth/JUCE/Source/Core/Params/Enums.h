@@ -16,6 +16,7 @@ enum class Dds2Mode { normOrSubOff = 0, ringOrSubSquare, syncOrSubSine };
 enum class OscTarget { dds1 = 0, both, dds2 };
 enum class SuperMode { off = 0, half, on };
 enum class PwmSource { manual = 0, lfo1, env1 };
+enum class CrossModMode { exponential = 0, linear };
 enum class Drive { off = 0, one, two };
 // Analog-modelled low-pass types (see VoiceFilter).
 enum class FilterType { ladder24 = 0, ladder12, cascade24, svf12 };

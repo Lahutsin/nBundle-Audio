@@ -17,9 +17,7 @@ public:
 
     explicit SynthEngine (juce::AudioProcessorValueTreeState& state);
 
-    void prepare (double sampleRate, int maxBlockSize, int requestedRenderWorkers = -1,
-                  int oversamplingFactor = SynthLayer::kDefaultOversamplingFactor);
-    int getOversamplingFactor() const noexcept { return upper.getOversamplingFactor(); }
+    void prepare (double sampleRate, int maxBlockSize, int requestedRenderWorkers = -1);
     int getRenderWorkerCount() const noexcept { return renderPool.getNumWorkers(); }
     void setAudioWorkgroup (const juce::AudioWorkgroup& workgroup) { renderPool.setWorkgroup (workgroup); }
     static constexpr int kControlGrid = 16;          // host samples: controller event resolution
@@ -29,7 +27,6 @@ public:
     void process (juce::AudioBuffer<float>& mix, juce::AudioBuffer<float>* upperOut, juce::AudioBuffer<float>* lowerOut,
                   const juce::MidiBuffer& midi, double hostBpm);
 
-    float getLatencySamples() const noexcept { return upper.getLatencySamples(); }
     int getActiveVoices (Layer l) const noexcept { return layer (l).getActiveVoiceCount(); }
     const SynthLayer& layer (Layer l) const noexcept { return l == Layer::upper ? upper : lower; }
     SynthLayer& layer (Layer l) noexcept { return l == Layer::upper ? upper : lower; }

@@ -106,6 +106,15 @@ int main (int argc, char* argv[])
             matrix.addRoute (ModSource::mseg2, findLayerSpecIndex (pid::distDrive), 0.4f, true);
             matrix.setMacroName (0, "Space");
             matrix.setMseg (1, MsegShape::make (MsegShape::Preset::steps));
+            // Four MSEGs: the MOD page opens MSEG 3 in its tab.
+            auto& modPage = editor->getModPage (Layer::upper);
+            const int third = modPage.addMseg(), fourth = modPage.addMseg();
+            matrix.setMseg (third, MsegShape::make (MsegShape::Preset::sine));
+            matrix.setMseg (fourth, MsegShape::make (MsegShape::Preset::rampDown));
+            matrix.addRoute (msegSource (third), findLayerSpecIndex (pid::pan), 0.5f, true);
+            matrix.addRoute (msegSource (third), findLayerSpecIndex (pid::res), 0.3f);
+            matrix.addRoute (msegSource (fourth), findLayerSpecIndex (pid::delayMix), 0.4f);
+            modPage.selectMseg (third);
             auto set = [&proc] (const char* suffix, float value)
             {
                 auto* parameter = proc.getState().getParameter (layerParamId (Layer::upper, suffix));
@@ -117,6 +126,8 @@ int main (int argc, char* argv[])
             set (pid::eqLowGain, 3.0f);
             set (pid::eqMidGain, -4.5f);
             set (pid::eqHighGain, 2.0f);
+            set (pid::eqLowQ, 1.6f);
+            set (pid::eqMidQ, 1.4f);
             set (pid::compOn, 1.0f);
             set (pid::reverbMix, 0.3f);
             set (pid::macro1, 0.4f);

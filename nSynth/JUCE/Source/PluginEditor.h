@@ -55,7 +55,6 @@ public:
     void redo();
     juce::Button& getUndoButton() noexcept { return undoButton; }
     juce::Button& getRedoButton() noexcept { return redoButton; }
-    juce::Button& getQualityButton() noexcept { return *qualityButton; }
 
     // ModulationHost
     bool canModulate (nsynth::Layer layer, int parameterIndex) const override;
@@ -89,8 +88,6 @@ private:
     void layoutContent();
     void updatePageVisibility();
     void updateUndoButtons();
-    void updateQualityButton();
-    void showQualityMenu();
     void stepPreset (int delta);
     // Runs `change` (which replaces the target layer), after a confirmation when that layer has unsaved edits.
     void confirmLayerChange (nsynth::Layer target, const juce::String& title, const juce::String& question,
@@ -120,7 +117,6 @@ private:
     juce::TextButton loadPatch { "LOAD PATCH" }, savePatch { "SAVE PATCH" }, comparePatch { "COMPARE" };
     juce::TextButton synthTab { "SYNTH" }, modTab { "MOD" }, fxTab { "FX" }, waveBrowserButton { "WAVE BANK" };
     juce::TextButton undoButton { "UNDO" }, redoButton { "REDO" };
-    juce::TextButton* qualityButton { nullptr };   // in the performance strip's title row
     juce::ComboBox sizeBox;
     std::unique_ptr<WaveBrowserPage> waveBrowserPage;
     std::unique_ptr<PresetBrowser> presetBrowser;

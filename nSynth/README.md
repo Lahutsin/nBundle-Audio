@@ -3,7 +3,7 @@
 This repository contains the JUCE version of **nSynth** — a 128-voice,
 bi-timbral hybrid digital/analog-modeled polyphonic synthesizer with
 binaural stereo voice pairing, a free modulation matrix (64 slots, 8 macros,
-two drawable MSEGs), a second multimode filter, 32 custom wavetable slots per layer,
+up to 16 drawable MSEGs), a second multimode filter, 32 custom wavetable slots per layer,
 adjustable velocity, and a reorderable eight-module effect chain per layer.
 
 ![nSynth plugin UI](docs/Plugin.png)
@@ -34,14 +34,25 @@ factory content are implemented:
   (`.ws6` I/O): FM = 4-operator FM waves, PD = phase distortion incl. the resonance waves,
   DG = digital waveform spectra, WT = vocal/digital wavetable style. Each layer has its own
   wave bank: a patch carries its custom waves (factory waves are not stored), a performance both.
-- DDS2: polyBLEP oscillator with the same analog shapes, NORM/RING/SYNC, LFO range, sub oscillator.
-- Cross mod (exponential FM), mixer, 1-pole HPF -> analog-modelled low-pass (VCF TYPE):
+  Tables are band-limited in half-octave mip levels, crossfaded by pitch: at 44.1/48 kHz every
+  note keeps harmonics up to 17-20 kHz, aliases fold back only above 20 kHz, and glides or
+  vibrato never step in brightness (see `nSynthAnalysis`).
+- DDS2: band-limited oscillator with the same analog shapes, NORM/RING/SYNC, LFO range, sub
+  oscillator. Every edge and slope break (including hard sync resets) is corrected with a 24-tap
+  Kaiser-windowed-sinc BLEP/BLAMP, so aliasing stays near -90 dB at 48 kHz and -70 dB at 44.1 kHz
+  (see `nSynthAnalysis`); DDS1 is delayed by the same 12 samples to stay aligned.
+- Cross mod (Exp: exponential FM; Linear: through-zero linear FM, AC-coupled, so it stays in tune
+  and DDS1 runs backwards through zero), mixer, 1-pole HPF -> analog-modelled low-pass (VCF TYPE):
   Ladder 24 / Ladder 12 (transistor ladder, tanh in every stage and at the input), Cascade 24
   (OTA cascade), SVF 12 (saturating state-variable filter). All zero-delay-feedback, drive
   OFF/1/2, half the ladder's resonance bass loss made up at the input, self-oscillation;
   the fully open filter stays flat across the audible band. VCA with ENV2/fixed envelopes.
 - ENV1 (attack hold, decay hold, loop, inverted, keytrack), ENV2, per-voice LFO1
   (LR phase, HF modes) and LFO2 (trigger modes), drift.
+- ANALOG (0 = off, the default): every voice slot keeps its own component tolerances, like the
+  parts of a voice card (DDS1/DDS2 tuning +/-4 ct, cutoff +/-0.12 oct, resonance +/-6 %, level
+  +/-0.4 dB, envelope times +/-8 %), and the oscillators wander with 1/f pitch noise (~1.5 ct RMS,
+  1.5-35 Hz). Patches saved without it load with 0 and sound as before.
 - 128-voice pool shared by UPPER/LOWER: Single/Dual/Split, Solo/Legato/Poly 1/Poly 2,
   unison sizes (stacks spread over +/- 1.5 x DETUNE, level-matched to a single voice,
   fanned out over STEREO WIDTH), portamento, hold/sustain. A stolen voice that is still
@@ -57,24 +68,29 @@ factory content are implemented:
   the feedback) and formant (CUTOFF morphs A-E-I-O-U); env amount (ENV1/1+2/ENV2), keytrack, drive.
 - Modulation: 64 slots, each source -> any continuous layer parameter (per voice, or per
   block for the effects and pan) with amount, curve and uni/bipolar response. Sources: ENV1/2,
-  MSEG 1/2, LFO1/2, DDS2, velocity, note, per-note random, poly AT, MPE pitch/timbre, mod wheel,
+  MSEG 1..16, LFO1/2, DDS2, velocity, note, per-note random, poly AT, MPE pitch/timbre, mod wheel,
   expression, ribbon and 8 macros (renamable). Knobs show the modulation range and the live
   value as a ring; route by dragging a source chip onto a knob, the knob's right-click menu, or
   the slot list. Schema 1/2 matrices (fixed grid / direct mapping) load as slots.
-- MSEG 1/2: drawable multi-segment envelopes / LFOs (up to 32 points, bendable segments, grid
+- MSEGs: a patch has 1..16 (MOD page tabs: + adds one, x deletes one and the later ones and their
+  slots move down; each tab shows how many slots it drives, the open one lists its destinations).
+  Drawable multi-segment envelopes / LFOs (up to 32 points, bendable segments, grid
   snap, presets), Env (one-shot) / Loop / Free (layer clock) modes, time 10 ms..30 s or synced
   1/16..8 bars.
 - Per-layer air shelf -> eight effect modules in a patch-stored, reorderable order (default:
   distortion -> EQ -> compressor -> chorus -> phaser -> flanger -> delay -> reverb), each
   switched on/off with a 10 ms crossfade: distortion (soft/hard/fold with anti-derivative
-  anti-aliasing, tube, crush; tone, mix), 3-band EQ, compressor (soft knee, parallel mix, keyed
+  anti-aliasing, tube, crush; tone, mix), 3-band EQ (low shelf, peak, high shelf, each with frequency, gain and Q), compressor (soft knee, parallel mix, keyed
   by the layer itself or the other layer for sidechain ducking), chorus (I/II/I+II), phaser,
   flanger, delay (tempo divisions 1/64..1/1 incl. triplets/dotted or 1..2000 ms, feedback,
   ping-pong, low/high cut, freeze, duck) and reverb (size, decay, pre-delay 0.1..250 ms,
   high/low cut, width, modulation, duck).
-- Voice oversampling Eco 1x / Standard 2x (default) / High 4x, optionally 4x for offline
-  renders (QUALITY in the performance strip); Mix + optional Upper/Lower outputs; a stereo-linked
-  safety limiter (-0.3 dBFS ceiling) on the main mix; a non-finite sample can never reach the
+- Voices render at the host rate; only the VCF and FILTER 2 (whose saturation would otherwise fold
+  back) run at twice the rate, between polyphase IIR half-band resamplers that are flat to 20 kHz
+  and 90 dB down from fs - 20 kHz (an open filter at Drive OFF: aliases about -85 dB instead of
+  -45 dB). No reported latency; a voice sounds about 12 samples after its note event (DDS2 BLEP
+  look-ahead, plus the half-band filters' few samples of group delay); Mix + optional Upper/Lower
+  outputs; a stereo-linked safety limiter (-0.3 dBFS ceiling) on the main mix; a non-finite sample can never reach the
   FX feedback loops (the layer would otherwise go silent until reload); lock-free atomic
   work-stealing on real-time worker threads (joining the host audio workgroup where available),
   with one worker budget shared by all instances of the process. Controller events are applied on
@@ -89,7 +105,7 @@ factory content are implemented:
   follow whichever of panel or MIDI moved last.
 - Editor generated from the parameter registry with uniform scaling 50-200 %: one layer at
   a time (UPPER / LOWER tabs show the loaded patch) on three pages: SYNTH (oscillators ->
-  filter -> amp, envelopes/LFOs, voicing, FILTER 2, macros), MOD (MSEG editors, modulation
+  filter -> amp, envelopes/LFOs, voicing, FILTER 2, macros), MOD (MSEG tabs, modulation
   slots) and FX (the effect chain as cards in processing order); performance settings and live
   controllers in one strip.
 - Performance presets (`.nsynthperf`), layer patches (`.nsynthpatch`), layer init/copy
@@ -98,9 +114,9 @@ factory content are implemented:
 
 Factory content: 112 hand-designed, loudness-matched patches in seven categories
 and 16 performances (8 layers, 8 splits), plus an offline DSP/CPU analysis target.
-Verified on Linux: `nSynthTests` (95,787 checks, 0 failures, including a random-patch
+Verified on Linux: `nSynthTests` (109,943 checks, 0 failures, including a random-patch
 robustness test and the real-time safety tests). AU validation and the AU build have not been
-re-run since the modulation/effects rework (now 335 parameters).
+re-run since the modulation/effects rework (now 455 parameters).
 Manual host/controller/pluginval
 checks remain open (the local `docs/07-QA-AND-VALIDATION.md` tracks them).
 

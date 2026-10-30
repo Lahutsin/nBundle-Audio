@@ -9,14 +9,27 @@
 
 namespace nsynth
 {
-// Modulation sources. The first ten keep their order (schema 1/2 routes refer to them by index).
+// Modulation sources. Saved patches refer to them by index: new ones are only ever appended.
 enum class ModSource : int
 {
     dds2, lfo2, env1, velocity, polyAftertouch, expression, ribbon, noteNumber, perNotePitch, timbre,
     env2, lfo1, mseg1, mseg2, modWheel, random,
     macro1, macro2, macro3, macro4, macro5, macro6, macro7, macro8,
+    mseg3, mseg4, mseg5, mseg6, mseg7, mseg8, mseg9, mseg10, mseg11, mseg12, mseg13, mseg14, mseg15, mseg16,
     count
 };
+
+// MSEG n (0-based) as a source, and back (-1: not an MSEG).
+constexpr ModSource msegSource (int index) noexcept
+{
+    return index < 2 ? (ModSource) ((int) ModSource::mseg1 + index) : (ModSource) ((int) ModSource::mseg3 + index - 2);
+}
+constexpr int msegIndexOf (ModSource source) noexcept
+{
+    return source == ModSource::mseg1 || source == ModSource::mseg2 ? (int) source - (int) ModSource::mseg1
+         : (int) source >= (int) ModSource::mseg3 && (int) source <= (int) ModSource::mseg16 ? (int) source - (int) ModSource::mseg3 + 2
+         : -1;
+}
 
 // Destinations of the former fixed matrix and direct mapping grids (schema 1/2 files and the
 // convenience API below). Each one is a layer parameter, see legacyTargetSuffix().
@@ -83,8 +96,9 @@ struct MsegShape
     static bool fromString (const juce::String& text, MsegShape& out);
 };
 
-// Per-layer patch data that is not a host parameter: modulation slots, macro names, MSEG shapes
-// and the effect order. Published to the audio thread as an immutable snapshot.
+// Per-layer patch data that is not a host parameter: modulation slots, macro names, the MSEGs
+// (how many the patch has and their shapes; their timing is host parameters) and the effect
+// order. Published to the audio thread as an immutable snapshot.
 struct ModMatrixData
 {
     static constexpr int kMaxSlots = 64;
@@ -96,7 +110,8 @@ struct ModMatrixData
 
     std::array<ModSlot, kMaxSlots> slots {};
     std::array<std::array<char, 24>, kMacros> macroNames {};   // empty = "Macro N"
-    std::array<MsegShape, 2> msegs {};
+    std::array<MsegShape, kMaxMsegs> msegs {};
+    int msegCount { 2 };   // MSEG 1 .. msegCount exist (1..kMaxMsegs)
     std::array<FxModule, kFxModules> fxOrder {};
 
     // Derived when published: the active slots and what they touch (not compared, not saved).
@@ -152,6 +167,12 @@ public:
     void setMacroName (int macro, const juce::String& name);
     MsegShape getMseg (int index) const noexcept;
     void setMseg (int index, const MsegShape& shape);
+    int getMsegCount() const noexcept;
+    // Appends an MSEG with the default shape; its index, or -1 when kMaxMsegs exist.
+    int addMseg();
+    // Deletes an MSEG (not the last one left): its routes go, the later MSEGs move down one place
+    // and their routes follow them. The caller moves the MSEG parameters the same way.
+    bool removeMseg (int index);
     std::array<FxModule, ModMatrixData::kFxModules> getFxOrder() const noexcept;
     // Moves the module at chain position `from` to position `to` (the others shift).
     void moveFxModule (int from, int to);
@@ -160,7 +181,7 @@ public:
     juce::ValueTree toValueTree (int layerIndex) const;
     bool restoreFromValueTree (const juce::ValueTree& tree, juce::String* error = nullptr);
 
-    static constexpr int schemaVersion = 3;
+    static constexpr int schemaVersion = 4;   // 4: up to 16 MSEGs
     static bool isPanelDuplicate (ModSource source, DirectModTarget target) noexcept;
     // Continuous layer parameters that respond to modulation (not macros or note-on-only settings).
     static bool isModulatable (int destination) noexcept;

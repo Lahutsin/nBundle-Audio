@@ -51,18 +51,17 @@ SynthEngine::SynthEngine (juce::AudioProcessorValueTreeState& state)
         addBinding (perfParamId (spec.suffix), spec, -1);
 }
 
-void SynthEngine::prepare (double sampleRate, int maxBlockSize, int requestedRenderWorkers, int oversamplingFactor)
+void SynthEngine::prepare (double sampleRate, int maxBlockSize, int requestedRenderWorkers)
 {
     renderPool.prepare (requestedRenderWorkers, maxBlockSize, sampleRate);
     perfReader.read (perf);
 
-    const double osRate = sampleRate * oversamplingFactor;
     for (int i = 0; i < kNumVoices; ++i)
-        voices[(size_t) i].prepare (osRate, WaveBank::factory().get(), (uint32_t) (1000 + 7919 * i));
+        voices[(size_t) i].prepare (sampleRate, WaveBank::factory().get(), (uint32_t) (1000 + 7919 * i));
     audioWaveBanks.fill (nullptr);
 
     for (auto* l : { &upper, &lower })
-        l->prepare (sampleRate, maxBlockSize, renderPool, oversamplingFactor);
+        l->prepare (sampleRate, maxBlockSize, renderPool);
 
     assignVoices (perf.keyboardMode, perf.singleLayer);
     lastMasterGain = -1.0f;
@@ -336,23 +335,16 @@ void SynthEngine::renderSegmentsCombined (int hostStart, int hostNum) noexcept
 
     CombinedVoiceTask task;
     std::array<int, 2> layerVoiceCounts {};
-    std::array<int, 2> layerStarts {};
-    std::array<int, 2> layerCounts {};
 
     for (auto* layerPtr : { &upper, &lower })
     {
         const int idx = toInt (layerPtr->getId());
-        const int f = layerPtr->getOversamplingFactor();
-        layerStarts[(size_t) idx] = hostStart * f;
-        layerCounts[(size_t) idx] = hostNum * f;
         if (layerPtr->isSilenced())
             continue;
         for (auto* voice : layerPtr->voices)
             if (voice->isActive())
             {
-                task.items[(size_t) task.itemCount++] = {
-                    layerPtr, voice, layerStarts[(size_t) idx], layerCounts[(size_t) idx]
-                };
+                task.items[(size_t) task.itemCount++] = { layerPtr, voice, hostStart, hostNum };
                 ++layerVoiceCounts[(size_t) idx];
             }
     }
@@ -369,8 +361,8 @@ void SynthEngine::renderSegmentsCombined (int hostStart, int hostNum) noexcept
         {
             auto& item = task.items[(size_t) i];
             auto& layer = *item.layer;
-            float* left = layer.osBlock.getChannelPointer (0);
-            float* right = layer.osBlock.getChannelPointer (1);
+            float* left = layer.hostScratch.getWritePointer (0);
+            float* right = layer.hostScratch.getWritePointer (1);
             item.voice->render (left, right, item.startSample, item.numSamples,
                                 layer.snap, layer.ctx, *layer.blockModMatrix);
         }
@@ -384,8 +376,8 @@ void SynthEngine::renderSegmentsCombined (int hostStart, int hostNum) noexcept
             continue;
         for (int lane = 0; lane < laneCount; ++lane)
         {
-            layerPtr->parallelScratch.clear (lane * 2, layerStarts[(size_t) idx], layerCounts[(size_t) idx]);
-            layerPtr->parallelScratch.clear (lane * 2 + 1, layerStarts[(size_t) idx], layerCounts[(size_t) idx]);
+            layerPtr->parallelScratch.clear (lane * 2, hostStart, hostNum);
+            layerPtr->parallelScratch.clear (lane * 2 + 1, hostStart, hostNum);
         }
     }
 
@@ -396,14 +388,12 @@ void SynthEngine::renderSegmentsCombined (int hostStart, int hostNum) noexcept
         const int idx = toInt (layerPtr->getId());
         if (layerVoiceCounts[(size_t) idx] == 0)
             continue;
-        const int start = layerStarts[(size_t) idx];
-        const int count = layerCounts[(size_t) idx];
-        float* destL = layerPtr->osBlock.getChannelPointer (0) + start;
-        float* destR = layerPtr->osBlock.getChannelPointer (1) + start;
+        float* destL = layerPtr->hostScratch.getWritePointer (0) + hostStart;
+        float* destR = layerPtr->hostScratch.getWritePointer (1) + hostStart;
         for (int lane = 0; lane < laneCount; ++lane)
         {
-            juce::FloatVectorOperations::add (destL, layerPtr->parallelScratch.getReadPointer (lane * 2) + start, count);
-            juce::FloatVectorOperations::add (destR, layerPtr->parallelScratch.getReadPointer (lane * 2 + 1) + start, count);
+            juce::FloatVectorOperations::add (destL, layerPtr->parallelScratch.getReadPointer (lane * 2) + hostStart, hostNum);
+            juce::FloatVectorOperations::add (destR, layerPtr->parallelScratch.getReadPointer (lane * 2 + 1) + hostStart, hostNum);
         }
     }
 }

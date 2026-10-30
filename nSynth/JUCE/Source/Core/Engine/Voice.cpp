@@ -8,15 +8,16 @@ namespace
 struct ParamIndices
 {
     int lfo2Rate, lfo2RateMod, portamento;
-    std::array<int, 2> msegTime;
+    std::array<int, kMaxMsegs> msegTime {};
     std::array<bool, kLayerParamCount> envelope {};
 
     ParamIndices()
         : lfo2Rate (findLayerSpecIndex (pid::lfo2Rate)),
           lfo2RateMod (findLayerSpecIndex (pid::lfo2RateMod)),
-          portamento (findLayerSpecIndex (pid::portamento)),
-          msegTime { findLayerSpecIndex (pid::mseg1Time), findLayerSpecIndex (pid::mseg2Time) }
+          portamento (findLayerSpecIndex (pid::portamento))
     {
+        for (int m = 0; m < kMaxMsegs; ++m)
+            msegTime[(size_t) m] = findLayerSpecIndex (msegSuffix (m, MsegField::time));
         for (auto* suffix : { pid::env1AttackHold, pid::env1Attack, pid::env1DecayHold, pid::env1Decay, pid::env1Sustain,
                               pid::env1Release, pid::env2Attack, pid::env2DecayHold, pid::env2Decay, pid::env2Sustain,
                               pid::env2Release })
@@ -90,6 +91,18 @@ void Voice::prepare (double internalSampleRate, const WaveBank* bank, uint32_t s
     lfo1.setPhase (rng.nextDouble());
     for (int i = 0; i < 3; ++i)
         driftTarget[i] = rng.nextFloat() * 2.0f - 1.0f;
+
+    // Own random stream, so the voice's other random values are the same with and without ANALOG.
+    // Two uniform draws per tolerance: values near the nominal one are more likely, as with real parts.
+    juce::Random spread ((juce::int64) (z ^ 0xd1b54a32d192ed03ull));
+    auto part = [&spread] { return spread.nextFloat() + spread.nextFloat() - 1.0f; };
+    tolerance.dds1Tune = part();
+    tolerance.dds2Tune = part();
+    tolerance.cutoff = part();
+    tolerance.resonance = part();
+    tolerance.level = part();
+    tolerance.envelope = part();
+    noiseState = (uint32_t) (z >> 32) | 1u;
     setSampleRate (internalSampleRate);
 }
 
@@ -98,16 +111,27 @@ void Voice::setSampleRate (double sr)
     sampleRate = sr;
     dds1.setSampleRate (sr);
     dds2.setSampleRate (sr);
-    filter.setSampleRate (sr);
+    // The filters' saturation would fold back at the voice rate: they run at twice the rate.
+    filter.setSampleRate (2.0 * sr);
     filter.reset();
-    filter2.setSampleRate (sr);
+    filter2.setSampleRate (2.0 * sr);
+    const auto halfband = Halfband::designFor (sr);
+    upsampler.setDesign (halfband);
+    downsampler.setDesign (halfband);
     for (auto* e : { &env1, &env2, &fixedEnv })
         e->setSampleRate (sr);
     lfo1.setSampleRate (sr);
     lfo2.setSampleRate (sr);
     lfo1Ramp.setSampleRate (sr);
     lfo2Ramp.setSampleRate (sr);
-    openTopHz = (float) (0.45 * sr);
+    for (size_t band = 0; band < kPitchNoiseBandsHz.size(); ++band)
+    {
+        // One-pole low-pass of uniform noise (variance 1/3): the input gain makes each band unit RMS.
+        const double a = 1.0 - std::exp (-juce::MathConstants<double>::twoPi * kPitchNoiseBandsHz[band] * kNoiseInterval / sr);
+        noiseCoefficient[band] = (float) a;
+        noiseInputGain[band] = (float) std::sqrt (3.0 * (2.0 - a) / a);
+    }
+    openTopHz = (float) (0.45 * 2.0 * sr); // of the filter rate
     openExponent = openTopHz > kLpfMaxHz ? std::log (openTopHz / kOpenStretchHz) / std::log (kLpfMaxHz / kOpenStretchHz) : 1.0f;
     stretchInput = -1.0f;
 }
@@ -155,10 +179,10 @@ void Voice::triggerEnvelopes() noexcept
     fixedEnv.noteOn();
 }
 
-void Voice::restartMsegs (const LayerSnapshot& p, const std::array<double, 2>& freePhase) noexcept
+void Voice::restartMsegs (const LayerSnapshot& p, const std::array<double, kMaxMsegs>& freePhase) noexcept
 {
     // ENV and LOOP start from the beginning at every (re)trigger; FREE joins the layer clock.
-    for (size_t m = 0; m < 2; ++m)
+    for (size_t m = 0; m < (size_t) kMaxMsegs; ++m)
     {
         msegPhase[m] = p.msegMode[m] == MsegMode::free ? freePhase[m] - std::floor (freePhase[m]) : 0.0;
         msegHint[m] = 0;
@@ -247,7 +271,8 @@ void Voice::begin (const StartInfo& info, const LayerSnapshot& p, bool fromSilen
     if (position <= -1.0f) panR = 0.0f;
     if (position >= 1.0f)  panL = 0.0f;
 
-    envTimeScale = 1.0f + p.drift * 0.1f * (rng.nextFloat() * 2.0f - 1.0f);
+    envTimeScale = (1.0f + p.drift * 0.1f * (rng.nextFloat() * 2.0f - 1.0f))
+                 * (1.0f + p.analog * kEnvelopeSpread * tolerance.envelope);
 
     if (info.retrigger || ! active)
     {
@@ -310,7 +335,7 @@ void Voice::changeNote (int newNote, float newVelocity, bool retrigger, uint64_t
         }
         lfo1Ramp.noteOn();
         lfo2Ramp.noteOn();
-        for (size_t m = 0; m < 2; ++m)
+        for (size_t m = 0; m < (size_t) kMaxMsegs; ++m)
             if (p.msegMode[m] != MsegMode::free)
             {
                 msegPhase[m] = 0.0;
@@ -386,6 +411,21 @@ float Voice::driftWalk (float& value, float& target, int& counter) noexcept
     }
     value += (target - value) * (float) (1.0 / (0.25 * sampleRate));
     return value;
+}
+
+float Voice::pitchNoise (size_t oscillator) noexcept
+{
+    // Equal-RMS bands five times apart sum to roughly 1/f noise between 1.5 and 35 Hz.
+    auto& bands = noiseBands[oscillator];
+    float sum = 0.0f;
+    for (size_t band = 0; band < bands.size(); ++band)
+    {
+        noiseState ^= noiseState << 13; noiseState ^= noiseState >> 17; noiseState ^= noiseState << 5;
+        const float white = (float) (noiseState >> 8) * (2.0f / 16777216.0f) - 1.0f;
+        bands[band] += (white * noiseInputGain[band] - bands[band]) * noiseCoefficient[band];
+        sum += bands[band];
+    }
+    return sum * 0.57735027f; // 1 / sqrt (3): unit RMS
 }
 
 void Voice::render (float* outL, float* outR, int startSample, int numSamples, const LayerSnapshot& p,
@@ -488,14 +528,21 @@ void Voice::render (float* outL, float* outR, int startSample, int numSamples, c
         envelopeTargets |= indices.envelope[(size_t) destinations[(size_t) d]];
     const bool glideModulated = isModulated (indices.portamento);
     const bool lfo2RateModulated = isModulated (indices.lfo2Rate) || isModulated (indices.lfo2RateMod);
-    const std::array<bool, 2> msegTimeModulated { isModulated (indices.msegTime[0]), isModulated (indices.msegTime[1]) };
-    const std::array<bool, 2> msegUsed { matrix.sourceUsed[(size_t) ModSource::mseg1], matrix.sourceUsed[(size_t) ModSource::mseg2] };
+    // Only the MSEGs the patch has run; only the routed ones are evaluated.
+    const size_t msegCount = (size_t) juce::jlimit (1, kMaxMsegs, matrix.msegCount);
+    std::array<bool, kMaxMsegs> msegTimeModulated {}, msegUsed {};
+    for (size_t m = 0; m < msegCount; ++m)
+    {
+        msegTimeModulated[m] = isModulated (indices.msegTime[m]);
+        msegUsed[m] = matrix.sourceUsed[(size_t) msegSource ((int) m)];
+    }
 
     const double baseGlideRate = p.portamento > 0.0f
                                ? 12.0 / ((double) portamentoSecondsPerOctave (p.portamento) * sampleRate) : 1.0e9;
     const double baseLfo2Hz = rates::lowFrequencyHz (p.lfo2Rate) * std::exp2 (3.0 * p.lfo2RateMod * lfo2Push);
-    std::array<double, 2> msegIncrement { 1.0 / (msegSeconds (p, 0, ctx.bpm) * sampleRate),
-                                          1.0 / (msegSeconds (p, 1, ctx.bpm) * sampleRate) };
+    std::array<double, kMaxMsegs> msegIncrement {};
+    for (size_t m = 0; m < msegCount; ++m)
+        msegIncrement[m] = 1.0 / (msegSeconds (p, (int) m, ctx.bpm) * sampleRate);
 
     Envelope& ampEnv = ampEnvUsesEnv2 ? env2 : fixedEnv;
 
@@ -513,7 +560,7 @@ void Voice::render (float* outL, float* outR, int startSample, int numSamples, c
     // Sources are 0..1; LFOs, DDS2 and ribbon rest at 0.5. Evaluated per sample only while slots
     // modulate this voice, otherwise once per block (editor, effect slots, note-on routes).
     float lastE1 = 0.0f, lastE2 = 0.0f;
-    std::array<float, 2> lastMseg {};
+    std::array<float, kMaxMsegs> lastMseg {};
     auto makeSources = [&] () noexcept
     {
         return std::array<float, ModMatrixData::sourceCount> {
@@ -533,7 +580,9 @@ void Voice::render (float* outL, float* outR, int startSample, int numSamples, c
             lastMseg[1],
             juce::jlimit (0.0f, 1.0f, ctx.modLever),
             randomValue,
-            p.macros[0], p.macros[1], p.macros[2], p.macros[3], p.macros[4], p.macros[5], p.macros[6], p.macros[7]
+            p.macros[0], p.macros[1], p.macros[2], p.macros[3], p.macros[4], p.macros[5], p.macros[6], p.macros[7],
+            lastMseg[2], lastMseg[3], lastMseg[4], lastMseg[5], lastMseg[6], lastMseg[7], lastMseg[8],
+            lastMseg[9], lastMseg[10], lastMseg[11], lastMseg[12], lastMseg[13], lastMseg[14], lastMseg[15]
         };
     };
 
@@ -547,13 +596,12 @@ void Voice::render (float* outL, float* outR, int startSample, int numSamples, c
             fixedEnv.process();
         const float ampLevel = ampEnv.getValue();
 
-        std::array<float, 2> mseg {};
-        for (size_t m = 0; m < 2; ++m)
+        for (size_t m = 0; m < msegCount; ++m)
         {
             if (msegTimeModulated[m])
                 msegIncrement[m] = 1.0 / (msegSeconds (e, (int) m, ctx.bpm) * sampleRate);
             if (msegUsed[m])
-                mseg[m] = matrix.msegs[m].evaluate ((float) msegPhase[m], msegHint[m]);
+                lastMseg[m] = matrix.msegs[m].evaluate ((float) msegPhase[m], msegHint[m]);
             msegPhase[m] += msegIncrement[m];
             if (msegPhase[m] >= 1.0)
                 msegPhase[m] = p.msegMode[m] == MsegMode::envelope ? 1.0 : msegPhase[m] - std::floor (msegPhase[m]);
@@ -561,7 +609,6 @@ void Voice::render (float* outL, float* outR, int startSample, int numSamples, c
 
         lastE1 = e1;
         lastE2 = e2;
-        lastMseg = mseg;
         if (modulating)
         {
             const auto modSources = makeSources();
@@ -621,8 +668,29 @@ void Voice::render (float* outL, float* outR, int startSample, int numSamples, c
         const double base = currentPitch + (double) ctx.layerPitchOffset + (double) ribbon + (double) channelTuning
                           + (double) (twinSign * e.binauralDetune * 0.01f) + (double) unisonDetune;
 
-        double pitch1 = base + range1 + drift1 + (toDds1 ? oscMod : 0.0f) + (perfToDds1 ? perfMod : 0.0f);
-        double pitch2 = base + range2 + sTune.next (e.dds2Tune, smooth) + drift2 + (toDds2 ? oscMod : 0.0f) + (perfToDds2 ? perfMod : 0.0f);
+        // ANALOG: this voice's tuning offsets plus the oscillators' own pitch noise (cents -> semitones).
+        const float analog = e.analog;
+        float analog1 = 0.0f, analog2 = 0.0f;
+        if (analog > 0.0f)
+        {
+            if (--noiseCountdown < 0)
+            {
+                noiseCountdown = kNoiseInterval - 1;
+                for (size_t osc = 0; osc < 2; ++osc)
+                {
+                    noiseFrom[osc] = noiseTo[osc];
+                    noiseTo[osc] = pitchNoise (osc);
+                }
+            }
+            const float towardsFrom = (float) noiseCountdown * (1.0f / (float) kNoiseInterval);
+            const float noise1 = noiseTo[0] + (noiseFrom[0] - noiseTo[0]) * towardsFrom;
+            const float noise2 = noiseTo[1] + (noiseFrom[1] - noiseTo[1]) * towardsFrom;
+            analog1 = analog * 0.01f * (kTuneSpreadCents * tolerance.dds1Tune + kPitchNoiseCents * noise1);
+            analog2 = analog * 0.01f * (kTuneSpreadCents * tolerance.dds2Tune + kPitchNoiseCents * noise2);
+        }
+
+        double pitch1 = base + range1 + drift1 + analog1 + (toDds1 ? oscMod : 0.0f) + (perfToDds1 ? perfMod : 0.0f);
+        double pitch2 = base + range2 + sTune.next (e.dds2Tune, smooth) + drift2 + analog2 + (toDds2 ? oscMod : 0.0f) + (perfToDds2 ? perfMod : 0.0f);
 
         // ---- DDS modulator ---------------------------------------------------
         const float morphFader = sMorph.next (juce::jlimit (0.0f, 1.0f, e.pwmWave), smooth);
@@ -642,12 +710,22 @@ void Voice::render (float* outL, float* outR, int startSample, int numSamples, c
         d1s.morph = juce::jlimit (0.0f, 1.0f, morph);
         const float pulseWidth = juce::jlimit (0.02f, 0.98f, 0.5f - 0.45f * (detune + pwm));
 
-        const float crossOct = sCross.next (juce::jlimit (0.0f, 1.0f, e.crossMod), smooth) * 4.0f;
+        const float cross = sCross.next (juce::jlimit (0.0f, 1.0f, e.crossMod), smooth);
         double f1 = noteToHz (pitch1);
         double f2 = dds2IsLfo ? rates::dds2LfoHz (e.dds2Tune) * (double) fastExp2 ((float) ((pitch2 - base - range2 - e.dds2Tune) / 12.0))
                               : noteToHz (pitch2);
-        if (crossOct > 0.0f)
+        if (cross > 0.0f && p.crossModMode == CrossModMode::linear)
         {
+            // Through-zero linear FM: the average pitch stays put. The modulator is AC-coupled by
+            // removing its waveform's DC (DDS1's tables have none), which a DC blocker would only do
+            // after a pitch swoop at every note.
+            const float index = kMaxLinearIndex * cross * cross;
+            if (syncMode) f2 *= juce::jmax (0.0, 1.0 + (double) (index * lastDds1)); // DDS2 does not run backwards
+            else          f1 *= 1.0 + (double) (index * (dds2.getLastOutput() - Dds2::naiveMean (p.dds2Wave, pulseWidth)));
+        }
+        else if (cross > 0.0f)
+        {
+            const float crossOct = cross * 4.0f;
             if (syncMode) f2 *= (double) fastExp2 (crossOct * lastDds1);          // reversed routing with SYNC
             else          f1 *= (double) fastExp2 (crossOct * dds2.getLastOutput()); // DDS2 -> DDS1 exponential FM
         }
@@ -656,8 +734,9 @@ void Voice::render (float* outL, float* outR, int startSample, int numSamples, c
         WrapEvent wrap;
         const float d1 = dds1.process (f1, d1s, rng, wrap);
         lastDds1 = d1;
-        const float d1Aligned = delayedDds1; // DDS2 output is one sample late (BLEP), align DDS1 with it
-        delayedDds1 = d1;
+        const float d1Aligned = dds1Delay[(size_t) dds1DelayIndex]; // DDS2 output is kLatency samples late (BLEP)
+        dds1Delay[(size_t) dds1DelayIndex] = d1;
+        dds1DelayIndex = (dds1DelayIndex + 1) % Dds2::kLatency;
 
         const float d2 = dds2.process (f2, p.dds2Wave, pulseWidth, syncMode ? &wrap : nullptr, rng);
         const float sub = subOn ? dds2.processSub (subSine, dds1.centroidPhase(), wrap) : 0.0f;
@@ -683,36 +762,55 @@ void Voice::render (float* outL, float* outR, int startSample, int numSamples, c
                             + e.lfo2Vcf * 4.0f * l2
                             + e.bendVcf * 10.0f * bendTotal
                             + keyTrack * ((float) currentPitch - 60.0f) / 12.0f
-                            + velOct + driftCut;
+                            + velOct + driftCut + analog * kCutoffSpreadOctaves * tolerance.cutoff;
 
         const float lpfBase = sLpf.next (e.lpfHz, smooth);
         const float hpfBase = sHpf.next (e.hpfHz, smooth);
         filter.setParameters (hpfBase * fastExp2 (driftCut), openLadderCutoff (lpfBase * fastExp2 (octaves)),
-                              sRes.next (e.res, smooth), p.drive, p.vcfType);
-        float filtered = filter.process (osc);
-        if (! std::isfinite (filtered))
-        {
-            // Never let a numerical blow-up reach the FX feedback loops (it would silence the layer).
-            filter.reset();
-            filtered = 0.0f;
-        }
+                              sRes.next (e.res * (1.0f + analog * kResonanceSpread * tolerance.resonance), smooth), p.drive, p.vcfType);
 
         // ---- FILTER 2 (serial after the VCF or parallel to it) -----------------
+        float cutoff2 = 0.0f;
         if (filter2On)
         {
             float envSrc2 = e1;
             if (p.f2EnvSource == EnvSource::both) envSrc2 = e1 + e2;
             else if (p.f2EnvSource == EnvSource::env2) envSrc2 = e2;
-            const float octaves2 = e.f2Env * 8.0f * envSrc2 + e.f2Keytrack * ((float) currentPitch - 60.0f) / 12.0f + driftCut;
-            const float cutoff2 = sF2Cutoff.next (e.f2Cutoff, smooth) * fastExp2 (octaves2);
-            const float input2 = filter2Serial ? filtered : osc;
-            float y2 = filter2.process (input2, p.f2Type, cutoff2, e.f2Res, e.f2Drive);
-            if (! std::isfinite (y2))
+            const float octaves2 = e.f2Env * 8.0f * envSrc2 + e.f2Keytrack * ((float) currentPitch - 60.0f) / 12.0f + driftCut
+                                 + analog * kCutoffSpreadOctaves * tolerance.cutoff;
+            cutoff2 = sF2Cutoff.next (e.f2Cutoff, smooth) * fastExp2 (octaves2);
+        }
+        const float filter2Mix = juce::jlimit (0.0f, 1.0f, e.f2Mix);
+
+        // Both filters (and FILTER 2's parallel mix) run at twice the rate, between one up- and one
+        // down-sampler. The tiny offset keeps the all-pass states out of the denormal range when the
+        // oscillators are silent; the VCF high-pass removes it.
+        std::array<float, 2> twice;
+        upsampler.up (osc + 1.0e-18f, twice[0], twice[1]);
+        for (auto& x : twice)
+        {
+            float y = filter.process (x);
+            if (filter2On)
             {
-                filter2.reset();
-                y2 = 0.0f;
+                float y2 = filter2.process (filter2Serial ? y : x, p.f2Type, cutoff2, e.f2Res, e.f2Drive);
+                if (! std::isfinite (y2))
+                {
+                    filter2.reset();
+                    y2 = 0.0f;
+                }
+                y += (y2 - y) * filter2Mix;
             }
-            filtered += (y2 - filtered) * juce::jlimit (0.0f, 1.0f, e.f2Mix);
+            x = y;
+        }
+        float filtered = downsampler.down (twice[0], twice[1]);
+        if (! std::isfinite (filtered))
+        {
+            // Never let a numerical blow-up reach the FX feedback loops (it would silence the layer).
+            filter.reset();
+            filter2.reset();
+            upsampler.reset();
+            downsampler.reset();
+            filtered = 0.0f;
         }
 
         // ---- VCA -------------------------------------------------------------
@@ -723,6 +821,15 @@ void Voice::render (float* outL, float* outR, int startSample, int numSamples, c
         gain *= juce::jmax (0.0f, 1.0f + e.vcaDds2 * d2);
         gain *= juce::jmax (0.0f, 1.0f + e.lfo2Vca * l2);
 
+        if (analog > 0.0f)
+        {
+            if (! juce::exactlyEqual (analog, levelAnalog))
+            {
+                levelAnalog = analog;
+                levelGain = fastExp2 (analog * kLevelSpreadDb * tolerance.level * (1.0f / 6.0206f)); // dB -> gain
+            }
+            gain *= levelGain;
+        }
         float out = filtered * gain * kOutputGain * voiceGain;
         bool startPending = false;
         if (stealPending)

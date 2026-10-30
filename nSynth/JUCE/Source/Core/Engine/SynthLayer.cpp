@@ -59,26 +59,17 @@ float SynthLayer::getModulationOffset (int parameterIndex) const noexcept
     return uiModOffset[(size_t) parameterIndex].load (std::memory_order_relaxed);
 }
 
-void SynthLayer::prepare (double hostSampleRate, int maxBlockSize, VoiceRenderPool& pool, int factor)
+void SynthLayer::prepare (double hostSampleRate, int maxBlockSize, VoiceRenderPool& pool)
 {
     hostRate = hostSampleRate;
     maxBlock = maxBlockSize;
     renderPool = &pool;
-    jassert (factor == 1 || factor == 2 || factor == 4);
-    oversamplingFactor = factor >= 4 ? 4 : factor >= 2 ? 2 : 1;
-
-    // One half-band stage per doubling (none at 1x: the block passes straight through).
-    const auto stages = (size_t) (oversamplingFactor == 4 ? 2 : oversamplingFactor == 2 ? 1 : 0);
-    oversampler = std::make_unique<juce::dsp::Oversampling<float>> (
-        2, stages, juce::dsp::Oversampling<float>::filterHalfBandPolyphaseIIR, true, true);
-    oversampler->initProcessing ((size_t) maxBlockSize);
-    oversampler->reset();
 
     hostScratch.setSize (2, maxBlockSize);
     keyBuffer.setSize (2, maxBlockSize);
     keyBuffer.clear();
     fxDry.setSize (2, maxBlockSize);
-    parallelScratch.setSize (2 * (pool.getNumWorkers() + 1), maxBlockSize * oversamplingFactor);
+    parallelScratch.setSize (2 * (pool.getNumWorkers() + 1), maxBlockSize);
     air.prepare (hostSampleRate);
     chorus.prepare (hostSampleRate, maxBlockSize);
     delay.prepare (hostSampleRate, maxBlockSize);
@@ -95,27 +86,20 @@ void SynthLayer::prepare (double hostSampleRate, int maxBlockSize, VoiceRenderPo
     asleep = false;
     quietSamples = 0;
 
-    const double osRate = hostRate * oversamplingFactor;
     for (auto* v : voices)
     {
         v->kill();
-        v->setSampleRate (osRate);
+        v->setSampleRate (hostRate);
     }
-}
-
-float SynthLayer::getLatencySamples() const noexcept
-{
-    return oversampler != nullptr ? oversampler->getLatencyInSamples() : 0.0f;
 }
 
 void SynthLayer::assignVoices (Voice* first, int count)
 {
     voices.clear();
-    const double osRate = hostRate * getOversamplingFactor();
     for (int i = 0; i < count; ++i)
     {
         first[i].kill();
-        first[i].setSampleRate (osRate);
+        first[i].setSampleRate (hostRate);
         voices.push_back (first + i);
     }
     voicesReassigned = true;
@@ -157,8 +141,6 @@ void SynthLayer::beginBlock (int numHostSamples, const VoiceContext& context, ui
 void SynthLayer::restart() noexcept
 {
     allNotesOff (true);
-    if (oversampler != nullptr)
-        oversampler->reset();
     air.reset();
     for (int m = 0; m < ModMatrixData::kFxModules; ++m)
         resetFxModule ((FxModule) m);
@@ -193,13 +175,10 @@ void SynthLayer::startBlock (int numHostSamples, const VoiceContext& context, ui
         releaseHeldBySustainEnd();
 
     hostScratch.clear (0, numHostSamples);
-    juce::dsp::AudioBlock<float> hostBlock (hostScratch);
-    osBlock = oversampler->processSamplesUp (hostBlock.getSubBlock (0, (size_t) numHostSamples));
-    osBlock.clear();
 
     lfo2MasterPhase += rates::lowFrequencyHz (snap.lfo2Rate) * numHostSamples / hostRate;
     lfo2MasterPhase -= std::floor (lfo2MasterPhase);
-    for (int m = 0; m < 2; ++m)
+    for (int m = 0; m < kMaxMsegs; ++m)
     {
         auto& phase = msegMasterPhase[(size_t) m];
         phase += numHostSamples / (msegCycleSeconds (snap, m, ctx.bpm) * hostRate);
@@ -216,10 +195,6 @@ void SynthLayer::finishVoices (int numHostSamples)
         return;
     }
 
-    juce::dsp::AudioBlock<float> hostBlock (hostScratch);
-    auto outBlock = hostBlock.getSubBlock (0, (size_t) numHostSamples);
-    oversampler->processSamplesDown (outBlock);
-
     // A non-finite sample would circulate forever in the effect feedback paths and silence the
     // layer until reload: drop the block and restart the signal path cleanly.
     bool finite = true;
@@ -232,7 +207,6 @@ void SynthLayer::finishVoices (int numHostSamples)
     if (! finite)
     {
         hostScratch.clear (0, numHostSamples);
-        oversampler->reset();
         air.reset();
         for (int m = 0; m < ModMatrixData::kFxModules; ++m)
             resetFxModule ((FxModule) m);
@@ -257,7 +231,7 @@ void SynthLayer::finishVoices (int numHostSamples)
         for (size_t d = 0; d < kLayerParamCount; ++d)
             if (blockModMatrix->modulated[d] && ! ModMatrix::isLayerDestination ((int) d))
                 uiModOffset[d].store (newest != nullptr ? newest->getModOffsets()[d] : 0.0f, std::memory_order_relaxed);
-    for (int m = 0; m < 2; ++m)
+    for (int m = 0; m < kMaxMsegs; ++m)
         uiMsegPhase[(size_t) m].store (newest != nullptr ? newest->getMsegPhase (m) : -1.0f, std::memory_order_relaxed);
 }
 
@@ -303,7 +277,8 @@ void SynthLayer::processFxModule (FxModule module, juce::AudioBuffer<float>& buf
             distortion.process (buffer, start, n, { fx.distType, fx.distDrive, fx.distTone, fx.distMix });
             break;
         case FxModule::eq:
-            eq.process (buffer, start, n, { fx.eqLowFreq, fx.eqLowGain, fx.eqMidFreq, fx.eqMidGain, fx.eqMidQ, fx.eqHighFreq, fx.eqHighGain });
+            eq.process (buffer, start, n, { fx.eqLowFreq, fx.eqLowGain, fx.eqMidFreq, fx.eqMidGain, fx.eqMidQ, fx.eqHighFreq,
+                                            fx.eqHighGain, fx.eqLowQ, fx.eqHighQ });
             break;
         case FxModule::compressor:
             compressor.process (buffer, start, n, { fx.compThreshold, fx.compRatio, fx.compAttackMs, fx.compReleaseMs, fx.compMakeup, fx.compMix },
@@ -365,7 +340,7 @@ void SynthLayer::processFxModule (FxModule module, juce::AudioBuffer<float>& buf
 void SynthLayer::updateSleep (const juce::AudioBuffer<float>& output, int numHostSamples) noexcept
 {
     // A layer without voices whose output stayed below -140 dBFS for 250 ms (reverb / delay tails
-    // included) goes to sleep: no oversampling, no effects until the next note. Its effects are
+    // included) goes to sleep: no voice rendering, no effects until the next note. Its effects are
     // reset, so it wakes up clean. In SINGLE mode this is the unused layer after its tails.
     const float level = juce::jmax (output.getMagnitude (0, 0, numHostSamples), output.getMagnitude (1, 0, numHostSamples));
     if (level > 1.0e-7f || getActiveVoiceCount() > 0)
@@ -377,8 +352,6 @@ void SynthLayer::updateSleep (const juce::AudioBuffer<float>& output, int numHos
     if (quietSamples < (int) (0.25 * hostRate))
         return;
     asleep = true;
-    if (oversampler != nullptr)
-        oversampler->reset();
     air.reset();
     for (int m = 0; m < ModMatrixData::kFxModules; ++m)
         resetFxModule ((FxModule) m);

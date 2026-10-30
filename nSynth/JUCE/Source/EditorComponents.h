@@ -150,6 +150,9 @@ public:
     // Source chips take their preferred width, other components `width`.
     void addHeaderComponent (std::unique_ptr<juce::Component> component, int width = kHeaderComponentWidth);
     int getColumns() const noexcept { return columns; }
+    // Share of its row's width (default: the column count).
+    float getWidthWeight() const noexcept { return widthWeight > 0.0f ? widthWeight : (float) columns; }
+    void setWidthWeight (float weight) noexcept { widthWeight = weight; }
     void setColumns (int newColumns) { columns = juce::jmax (1, newColumns); resized(); }
     const std::vector<std::unique_ptr<ParamControl>>& getControls() const noexcept { return controls; }
     void paint (juce::Graphics&) override;
@@ -166,6 +169,7 @@ protected:
     juce::String title;
     juce::Colour accent;
     int columns;
+    float widthWeight { 0.0f };
     std::vector<std::unique_ptr<ParamControl>> controls;
     std::vector<std::vector<ParamControl*>> cells;
     std::vector<std::unique_ptr<juce::Component>> headerComponents;

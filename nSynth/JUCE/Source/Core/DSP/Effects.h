@@ -171,7 +171,8 @@ private:
     int holdCounter { 0 };
 };
 
-// Low shelf, peak and high shelf (RBJ biquads); coefficients follow the settings per block.
+// Low shelf, peak and high shelf (RBJ biquads), each with frequency, gain and Q; coefficients
+// follow the settings per block.
 class ThreeBandEq
 {
 public:
@@ -180,6 +181,7 @@ public:
         float lowHz { 150.0f }, lowDb { 0.0f };
         float midHz { 1000.0f }, midDb { 0.0f }, midQ { 0.7f };
         float highHz { 6000.0f }, highDb { 0.0f };
+        float lowQ { 0.7071068f }, highQ { 0.7071068f };   // shelf slope; 1/sqrt(2) = RBJ slope S = 1
     };
     void prepare (double sampleRate);
     void reset();

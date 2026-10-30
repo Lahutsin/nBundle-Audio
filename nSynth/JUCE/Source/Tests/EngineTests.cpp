@@ -219,16 +219,15 @@ public:
             expectEquals (peak (out.r), 0.0f);
         }
 
-        beginTest ("end-to-end pitch: DDS1 sine, A4 -> 440 Hz with fixed 2x oversampling; latency reported");
+        beginTest ("end-to-end pitch: DDS1 sine, A4 -> 440 Hz at the host rate, no latency");
         {
             Rig rig;
-            expectEquals (rig.proc.getEngine().getOversamplingFactor(), 2);
+            expectEquals (rig.proc.getLatencySamples(), 0);
             rig.setLayer (Layer::upper, pid::binaural, (float) toInt (BinauralMode::x1));
             rig.setLayer (Layer::upper, pid::dds1Wave, (float) toInt (Dds1Wave::sine));
             auto out = rig.render (48000, { { 0, on (69) } });
             expectWithinAbsoluteError (zeroCrossingFrequency (out.l, 48000.0, 4800), 440.0, 0.1);
             expect (allFinite (out.l));
-            expectGreaterThan (rig.proc.getEngine().getLatencySamples(), 0.0f);
         }
 
         beginTest ("RANGE 4' doubles, transpose/perf detune shift, LOWER detune only affects the lower layer");
@@ -406,6 +405,107 @@ public:
             rig.render (48000);
             rig.render (512, chord ({ 50 }));
             expectEquals (rig.voices (Layer::upper), 64);
+        }
+
+        beginTest ("ANALOG: every voice has its own tuning and level, the oscillators wander; 0 = identical voices");
+        {
+            struct Spread
+            {
+                std::vector<double> noteCents, noteDb, windowCents; // window: deviation from its note's mean
+            };
+            // A sine through the open filter, one note at a time: voice allocation walks through the slots.
+            auto measure = [&] (float analog)
+            {
+                Rig rig;
+                rig.setLayer (Layer::upper, pid::binaural, 0.0f);
+                rig.setLayer (Layer::upper, pid::dds1Wave, (float) toInt (Dds1Wave::sine));
+                rig.setLayer (Layer::upper, pid::drift, 0.0f);
+                rig.setLayer (Layer::upper, pid::analog, analog);
+                auto cents = [] (const std::vector<float>& x) { return 1200.0 * std::log2 (zeroCrossingFrequency (x, 48000.0) / 440.0); };
+                Spread spread;
+                for (int n = 0; n < 8; ++n)
+                {
+                    const auto out = rig.render (24000, { { 0, on (69) }, { 19200, off (69) } });
+                    const std::vector<float> held (out.l.begin() + 4800, out.l.begin() + 19200);
+                    spread.noteCents.push_back (cents (held));
+                    spread.noteDb.push_back (juce::Decibels::gainToDecibels (rms (held)));
+                    for (size_t w = 0; w + 2400 <= held.size(); w += 2400)
+                        spread.windowCents.push_back (cents ({ held.begin() + (long) w, held.begin() + (long) w + 2400 }) - spread.noteCents.back());
+                }
+                return spread;
+            };
+            auto range = [] (const std::vector<double>& v) { return *std::max_element (v.begin(), v.end()) - *std::min_element (v.begin(), v.end()); };
+            auto largest = [] (const std::vector<double>& v)
+            {
+                double m = 0.0;
+                for (auto x : v)
+                    m = juce::jmax (m, std::abs (x));
+                return m;
+            };
+
+            const auto exact = measure (0.0f);
+            expectLessThan (range (exact.noteCents), 0.01);
+            expectLessThan (range (exact.noteDb), 0.001);
+            expectLessThan (largest (exact.windowCents), 0.01);
+
+            const auto analog = measure (1.0f);
+            expectGreaterThan (range (analog.noteCents), 1.0);   // tuning spread between the voices
+            expectLessThan (largest (analog.noteCents), 6.0);    // +/-4 ct plus the averaged-out noise
+            expectGreaterThan (range (analog.noteDb), 0.1);      // level spread (+/-0.4 dB)
+            expectLessThan (range (analog.noteDb), 0.8);
+            expectGreaterThan (largest (analog.windowCents), 0.3); // pitch noise within a held note
+            expectLessThan (largest (analog.windowCents), 6.0);
+        }
+
+        beginTest ("CROSS MOD: Linear (through-zero) FM stays in tune, also with a DC-heavy pulse; Exp shifts the pitch");
+        {
+            // DDS2 modulates DDS1 at 1:1 (A3): an in-tune result only has harmonics of 220 Hz.
+            auto offSeriesDb = [&] (CrossModMode mode, Dds2Wave modulator, float depth)
+            {
+                Rig rig;
+                rig.setLayer (Layer::upper, pid::binaural, 0.0f);
+                rig.setLayer (Layer::upper, pid::drift, 0.0f);
+                rig.setLayer (Layer::upper, pid::dds1Wave, (float) toInt (Dds1Wave::sine));
+                rig.setLayer (Layer::upper, pid::dds2Wave, (float) toInt (modulator));
+                rig.setLayer (Layer::upper, pid::pwDetune, 0.6f); // pulse width 0.23: a mean of about -0.5
+                rig.setLayer (Layer::upper, pid::mix, 0.0f);
+                rig.setLayer (Layer::upper, pid::crossMod, depth);
+                rig.setLayer (Layer::upper, pid::crossModMode, (float) toInt (mode));
+                const auto out = rig.render (4800 + 65536, chord ({ 57 }));
+                const auto spec = spectrum (out.l, 16, 4800);
+                const double binHz = 48000.0 / 65536.0, f = 220.0;
+                double on = 0.0, off = 0.0;
+                for (size_t k = 1; k < spec.size() && (double) k * binHz < 20000.0; ++k)
+                {
+                    const double hz = (double) k * binHz, power = spec[k] * spec[k];
+                    if (std::abs (hz - std::round (hz / f) * f) < 8.0 * binHz) on += power;
+                    else if (hz > 20.0)                                       off += power;
+                }
+                return 10.0 * std::log10 (juce::jmax (1.0e-30, off) / (on + off));
+            };
+            // The Hann window's leakage over dozens of sidebands sets a floor near -64 dB here.
+            expectLessThan (offSeriesDb (CrossModMode::linear, Dds2Wave::sine, 0.5f), -50.0);
+            expectLessThan (offSeriesDb (CrossModMode::linear, Dds2Wave::pulse, 0.35f), -40.0);
+            expectGreaterThan (offSeriesDb (CrossModMode::exponential, Dds2Wave::sine, 0.5f), -10.0);
+        }
+
+        beginTest ("VCF saturation runs at twice the rate: an open ladder at Drive OFF does not fold back");
+        {
+            Rig rig;
+            rig.setLayer (Layer::upper, pid::binaural, 0.0f);
+            rig.setLayer (Layer::upper, pid::drift, 0.0f);
+            const auto out = rig.render (4800 + 65536, chord ({ 72 })); // DDS1 saw, C5, filter open
+            const auto spec = spectrum (out.l, 16, 4800);
+            const double binHz = 48000.0 / 65536.0, f = 440.0 * std::exp2 (3.0 / 12.0);
+            double on = 0.0, off = 0.0;
+            for (size_t k = 1; k < spec.size() && (double) k * binHz < 20000.0; ++k)
+            {
+                const double hz = (double) k * binHz, power = spec[k] * spec[k];
+                if (std::abs (hz - std::round (hz / f) * f) < 8.0 * binHz) on += power;
+                else if (hz > 20.0)                                       off += power;
+            }
+            // At the voice rate this was about -44 dB; the Hann window's own floor is near -62 dB.
+            expectLessThan (10.0 * std::log10 (juce::jmax (1.0e-30, off) / (on + off)), -55.0);
         }
 
         beginTest ("retriggering a sounding voice keeps the oscillator phase (no click)");

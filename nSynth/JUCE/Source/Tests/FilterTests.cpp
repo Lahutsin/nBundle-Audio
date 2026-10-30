@@ -1,5 +1,6 @@
 #include "TestHelpers.h"
 #include "Core/DSP/VoiceFilter.h"
+#include "Core/DSP/Halfband.h"
 
 using namespace nsynth;
 using namespace nsynth::test;
@@ -118,6 +119,48 @@ public:
             expectGreaterThan (ladder, -8.0);    // ... but far less than the uncompensated -13.5 dB
             expectGreaterThan (loss (FilterType::cascade24), -8.0);
             expectWithinAbsoluteError (loss (FilterType::svf12), 0.0, 1.5);
+        }
+
+        beginTest ("2x half-band: flat to 20 kHz, -85 dB from fs - 20 kHz (folds back above 20 kHz)");
+        for (double rate : { 44100.0, 48000.0, 96000.0 })
+        {
+            const auto design = Halfband::designFor (rate);
+            expect (design.count > 0 && design.count <= Halfband::kMaxCoefficients);
+            const double passEdge = juce::jmin (20000.0, 0.45 * rate), stopEdge = juce::jmax (rate - 20000.0, 0.55 * rate);
+            double worstPass = 0.0, worstStop = -300.0;
+            for (double f = 0.0; f <= passEdge; f += 25.0)
+                worstPass = juce::jmax (worstPass, std::abs (Halfband::responseDb (design, f, rate)));
+            for (double f = stopEdge; f <= rate; f += 25.0)
+                worstStop = juce::jmax (worstStop, Halfband::responseDb (design, f, rate));
+            expectLessThan (worstPass, 0.01, "rate " + juce::String (rate));
+            expectLessThan (worstStop, -85.0, "rate " + juce::String (rate));
+        }
+
+        beginTest ("2x half-band: up then down keeps a tone; down-sampling suppresses what would fold back");
+        {
+            const double rate = 48000.0;
+            const auto design = Halfband::designFor (rate);
+            HalfbandResampler up, down;
+            up.setDesign (design);
+            down.setDesign (design);
+            std::vector<float> out (1 << 15);
+            for (size_t i = 0; i < out.size(); ++i)
+            {
+                float a = 0.0f, b = 0.0f;
+                up.up (0.5f * (float) std::sin (juce::MathConstants<double>::twoPi * 3000.0 * (double) i / rate), a, b);
+                out[i] = down.down (a, b);
+            }
+            expectWithinAbsoluteError (toneAmplitude (out, 3000.0, rate, 4096), 0.5, 0.001);
+
+            // 30 kHz at the doubled rate would fold back to 18 kHz.
+            HalfbandResampler decimator;
+            decimator.setDesign (design);
+            for (size_t i = 0; i < out.size(); ++i)
+            {
+                auto tone = [] (size_t n) { return 0.5f * (float) std::sin (juce::MathConstants<double>::twoPi * 30000.0 * (double) n / 96000.0); };
+                out[i] = decimator.down (tone (2 * i), tone (2 * i + 1));
+            }
+            expectLessThan (toDb (toneAmplitude (out, 18000.0, rate, 4096) / 0.5), -85.0);
         }
     }
 };

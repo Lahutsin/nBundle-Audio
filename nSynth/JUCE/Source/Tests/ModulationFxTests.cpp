@@ -153,6 +153,37 @@ public:
             expectWithinAbsoluteError (toDb (toneAmplitude (channel (b, 0, 12000, 24000), 1000.0, hostRate) / 0.1), 6.0, 0.3);
         }
 
+        beginTest ("EQ: every band has a Q; the shelves' default is the former slope S = 1");
+        {
+            ThreeBandEq::Settings smooth;
+            smooth.lowDb = 9.0f;
+            smooth.highDb = -9.0f;
+            // RBJ shelf, S = 1 (no overshoot): half the gain at the corner, the full gain far from it.
+            expectWithinAbsoluteError (ThreeBandEq::responseDb (smooth, 150.0, hostRate), 4.5f, 0.2f);
+            expectWithinAbsoluteError (ThreeBandEq::responseDb (smooth, 20.0, hostRate), 9.0f, 0.3f);
+            float maxSmooth = -100.0f;
+            for (double hz = 20.0; hz < 1000.0; hz *= 1.02)
+                maxSmooth = juce::jmax (maxSmooth, ThreeBandEq::responseDb (smooth, hz, hostRate));
+            expectLessThan (maxSmooth, 9.1f);
+
+            // A resonant shelf overshoots its gain and dips on the other side of the corner.
+            auto resonant = smooth;
+            resonant.lowQ = 3.0f;
+            resonant.highQ = 3.0f;
+            float maxLow = -100.0f, minLow = 100.0f, minHigh = 100.0f;
+            for (double hz = 20.0; hz < 1000.0; hz *= 1.02)
+            {
+                const float db = ThreeBandEq::responseDb (resonant, hz, hostRate);
+                maxLow = juce::jmax (maxLow, db);
+                minLow = juce::jmin (minLow, db);
+            }
+            for (double hz = 1500.0; hz < 18000.0; hz *= 1.02)
+                minHigh = juce::jmin (minHigh, ThreeBandEq::responseDb (resonant, hz, hostRate));
+            expectGreaterThan (maxLow, 11.0f);
+            expectLessThan (minLow, -0.5f);
+            expectLessThan (minHigh, -11.0f);
+        }
+
         beginTest ("compressor: static curve, gain reduction, and the key of the other layer");
         {
             Compressor::Settings s;   // -18 dB, 4:1
@@ -259,6 +290,26 @@ public:
             expectLessThan (level (10600, 13600), full * 0.005);
             expectGreaterThan (level (15400, 18600), full * 0.5);
             expect (rig.proc.getEngine().layer (Layer::upper).getMsegPosition (0) >= 0.0f);
+        }
+
+        beginTest ("engine: MSEG 12 of a patch with 12 MSEGs works like MSEG 1");
+        {
+            Rig rig;
+            while (rig.matrix().getMsegCount() < 12)
+                rig.matrix().addMseg();
+            const int m = 11;
+            rig.setLayer (Layer::upper, msegSuffix (m, MsegField::mode), (float) toInt (MsegMode::loop));
+            rig.setLayer (Layer::upper, msegSuffix (m, MsegField::sync), 0.0f);
+            rig.setLayer (Layer::upper, msegSuffix (m, MsegField::time), 0.2f);
+            rig.matrix().setMseg (m, MsegShape::make (MsegShape::Preset::square));
+            rig.matrix().addRoute (msegSource (m), findLayerSpecIndex (pid::vcaEnv), -1.0f);
+            const auto out = rig.render (19200, { { 0, on (60) } }).first;
+            auto level = [&out] (int from, int to) { return rms (std::vector<float> (out.begin() + from, out.begin() + to)); };
+            const double full = level (5800, 9000);
+            expectGreaterThan (full, 1.0e-2);
+            expectLessThan (level (1000, 4000), full * 0.005);
+            expectLessThan (level (10600, 13600), full * 0.005);
+            expect (rig.proc.getEngine().layer (Layer::upper).getMsegPosition (m) >= 0.0f);
         }
 
         beginTest ("engine: a macro slot drives an effect parameter without a note playing");

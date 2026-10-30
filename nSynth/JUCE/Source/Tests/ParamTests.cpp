@@ -11,7 +11,7 @@ public:
     void runTest() override
     {
         beginTest ("registry sizes are the documented ones");
-        expectEquals ((int) getLayerParamSpecs().size(), 160);
+        expectEquals ((int) getLayerParamSpecs().size(), 220);
         expectEquals ((int) getLayerParamSpecs().size(), (int) kLayerParamCount);
         expectEquals ((int) getPerformanceParamSpecs().size(), 15);
 
@@ -29,14 +29,14 @@ public:
             }
             for (auto& spec : getPerformanceParamSpecs())
                 expect (s.getParameter (perfParamId (spec.suffix)) != nullptr, spec.suffix);
-            expectEquals (proc.getParameters().size(), 2 * 160 + 15);
+            expectEquals (proc.getParameters().size(), 2 * 220 + 15);
 
-            // Version 2 parameters follow every version 1 parameter (host parameter order).
-            bool seenV2 = false;
+            // Each parameter version follows every older one (host parameter order).
+            int newestVersion = 1;
             for (auto& spec : getLayerParamSpecs())
             {
-                expect (! (seenV2 && spec.version == 1), spec.suffix);
-                seenV2 |= spec.version == 2;
+                expect (spec.version >= newestVersion, spec.suffix);
+                newestVersion = juce::jmax (newestVersion, spec.version);
             }
             expectEquals (findLayerSpecIndex (pid::macro1), 100);
         }
@@ -50,6 +50,7 @@ public:
         expectEquals (choices (pid::dds2Mode), toInt (Dds2Mode::syncOrSubSine) + 1);
         expectEquals (choices (pid::superMode), toInt (SuperMode::on) + 1);
         expectEquals (choices (pid::pwmSource), toInt (PwmSource::env1) + 1);
+        expectEquals (choices (pid::crossModMode), toInt (CrossModMode::linear) + 1);
         expectEquals (choices (pid::vcfDrive), toInt (Drive::two) + 1);
         expectEquals (choices (pid::vcaEnvMode), toInt (VcaEnvMode::fixed2) + 1);
         expectEquals (choices (pid::env1Mode), toInt (Env1Mode::loop) + 1);

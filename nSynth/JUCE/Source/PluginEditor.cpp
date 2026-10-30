@@ -14,7 +14,7 @@ juce::String layerName (Layer l) { return l == Layer::upper ? "UPPER" : "LOWER";
 // Header and layer bar (design pixels).
 constexpr int kHeaderHeight = 40, kPresetBarMaxWidth = 580, kHeaderButtonHeight = 28;
 constexpr int kUndoButtonWidth = 54;
-constexpr int kPerformanceStripHeight = 84, kQualityButtonWidth = 84;
+constexpr int kPerformanceStripHeight = 84;
 constexpr int kLayerBarHeight = 34, kLayerTabWidth = 290, kLayerActionWidth = 92, kSavePatchWidth = 104;
 // SYNTH page: the sources and modulator rows; the third row takes the rest.
 constexpr int kSourceRowHeight = 222, kModulatorRowHeight = 184;
@@ -119,11 +119,15 @@ NSynthAudioProcessorEditor::NSynthAudioProcessorEditor (NSynthAudioProcessor& p)
     voiceMeter.setColour (juce::Label::textColourId, kTextDim);
     content.addAndMakeVisible (voiceMeter);
 
-    // SYNTH page: three rows in signal-flow order (column counts set the section widths).
-    const std::vector<std::pair<Section, int>> rowLayout[3] = {
-        { { Section::dds1, 2 }, { Section::dds2, 2 }, { Section::mixer, 1 }, { Section::ddsMod, 3 }, { Section::vcf, 4 }, { Section::vca, 2 } },
-        { { Section::env1, 4 }, { Section::env2, 3 }, { Section::lfo1, 3 }, { Section::perfControl, 5 } },
-        { { Section::voiceAssign, 5 }, { Section::filter2, 5 }, { Section::macros, 4 } } };
+    // SYNTH page: three rows in signal-flow order. Columns are chosen so every section fits in
+    // two rows of controls; the weight is the section's share of the row width (the oscillators'
+    // wave menus need more room than a knob).
+    struct RowEntry { Section section; int columns; float weight; };
+    const std::vector<RowEntry> rowLayout[3] = {
+        { { Section::dds1, 2, 2.4f }, { Section::dds2, 2, 2.4f }, { Section::mixer, 1, 1.1f }, { Section::ddsMod, 6, 5.8f },
+          { Section::vcf, 5, 5.6f }, { Section::vca, 2, 2.2f } },
+        { { Section::env1, 4, 4.0f }, { Section::env2, 3, 3.0f }, { Section::lfo1, 3, 3.0f }, { Section::perfControl, 7, 7.0f } },
+        { { Section::voiceAssign, 5, 5.0f }, { Section::filter2, 5, 5.0f }, { Section::macros, 4, 4.0f } } };
 
     const SwitchedCellRegistrar registerSwitched = [this] (ParamControl* whenOff, ParamControl* whenOn, const char* selector)
     {
@@ -137,13 +141,14 @@ NSynthAudioProcessorEditor::NSynthAudioProcessorEditor (NSynthAudioProcessor& p)
         const auto accent = accentForLayer (layer);
         buildingPage = Page::synth;
         for (size_t row = 0; row < 3; ++row)
-            for (auto [section, cols] : rowLayout[row])
+            for (const auto& entry : rowLayout[row])
             {
-                ui.rows[row].push_back (makeSection (layer, section, cols, accent));
+                ui.rows[row].push_back (makeSection (layer, entry.section, entry.columns, accent));
+                ui.rows[row].back()->setWidthWeight (entry.weight);
                 content.addChildComponent (*ui.rows[row].back());
             }
         buildingPage = Page::mod;
-        ui.modPage = std::make_unique<ModPage> (synth.getEngine(), layer, accent, factory, registerSwitched);
+        ui.modPage = std::make_unique<ModPage> (synth.getState(), synth.getEngine(), layer, accent, factory, registerSwitched);
         content.addChildComponent (*ui.modPage);
         buildingPage = Page::fx;
         ui.fxPage = std::make_unique<FxPage> (synth.getState(), synth.getEngine(), layer, accent, factory, registerSwitched);
@@ -173,12 +178,6 @@ NSynthAudioProcessorEditor::NSynthAudioProcessorEditor (NSynthAudioProcessor& p)
         configureMidiLearn (*control);
         performancePanel->add (std::move (control));
     }
-    // Oversampling quality: a session setting of the processor, chosen from a menu.
-    auto quality = std::make_unique<juce::TextButton>();
-    qualityButton = quality.get();
-    qualityButton->setTooltip ("Oversampling of the voices (saved with the session, not with presets)");
-    qualityButton->onClick = [this] { showQualityMenu(); };
-    performancePanel->addHeaderComponent (std::move (quality), kQualityButtonWidth);
     content.addAndMakeVisible (*performancePanel);
     waveBrowserPage = std::make_unique<WaveBrowserPage> (synth.getEngine());
     waveBrowserPage->onClose = [this] { waveBrowserPage->setVisible (false); };
@@ -202,7 +201,6 @@ NSynthAudioProcessorEditor::NSynthAudioProcessorEditor (NSynthAudioProcessor& p)
     selectBottomLayer (Layer::upper);
     updateSwitchedControls();
     updateUndoButtons();
-    updateQualityButton();
     layoutContent();
 
     // Read before setResizeLimits(): that call resizes the editor and resized() stores the scale.
@@ -347,9 +345,18 @@ bool NSynthAudioProcessorEditor::canModulate (Layer, int parameterIndex) const
 void NSynthAudioProcessorEditor::addModulationMenuItems (juce::PopupMenu& menu, Layer layer, int parameterIndex)
 {
     auto& matrix = synth.getEngine().modMatrix (layer);
-    juce::PopupMenu add;
+    // The patch's MSEGs in their own submenu, the other sources in enum order.
+    juce::PopupMenu add, msegMenu;
+    const int msegCount = matrix.getMsegCount();
+    for (int m = 0; m < msegCount; ++m)
+        msegMenu.addItem (kModulationMenuBase + (int) msegSource (m), sourceName (matrix, (int) msegSource (m)));
     for (int source = 0; source < (int) ModSource::count; ++source)
-        add.addItem (kModulationMenuBase + source, sourceName (matrix, source));
+    {
+        if (msegIndexOf ((ModSource) source) == 0)
+            add.addSubMenu ("MSEG", msegMenu);
+        if (msegIndexOf ((ModSource) source) < 0)
+            add.addItem (kModulationMenuBase + source, sourceName (matrix, source));
+    }
     menu.addSubMenu ("Modulate with", add);
 
     int routes = 0;
@@ -485,14 +492,14 @@ void NSynthAudioProcessorEditor::layoutContent()
 
     auto layoutRow = [] (juce::Rectangle<int> area, std::vector<SectionPanel*> sections)
     {
-        int totalCols = 0;
+        float totalWeight = 0.0f;
         for (auto* s : sections)
-            totalCols += s->getColumns();
-        const float colW = (float) area.getWidth() / (float) totalCols;
+            totalWeight += s->getWidthWeight();
+        const float colW = (float) area.getWidth() / totalWeight;
         float x = (float) area.getX();
         for (auto* s : sections)
         {
-            const float w = colW * (float) s->getColumns();
+            const float w = colW * s->getWidthWeight();
             s->setBounds (juce::Rectangle<float> (x, (float) area.getY(), w, (float) area.getHeight()).toNearestInt().reduced (2));
             x += w;
         }
@@ -650,37 +657,6 @@ bool NSynthAudioProcessorEditor::keyPressed (const juce::KeyPress& key)
     return false;
 }
 
-void NSynthAudioProcessorEditor::updateQualityButton()
-{
-    const auto text = "QUALITY " + juce::String (synth.getOversamplingQuality()) + "x";
-    if (qualityButton->getButtonText() != text)
-        qualityButton->setButtonText (text);
-}
-
-void NSynthAudioProcessorEditor::showQualityMenu()
-{
-    enum { offlineItem = 100 };
-    const int quality = synth.getOversamplingQuality();
-    juce::PopupMenu menu;
-    menu.addSectionHeader ("Oversampling");
-    menu.addItem (1, "Eco 1x", true, quality == 1);
-    menu.addItem (2, "Standard 2x", true, quality == 2);
-    menu.addItem (4, "High 4x", true, quality == 4);
-    menu.addSeparator();
-    menu.addItem (offlineItem, "Offline renders 4x", true, synth.getOfflineHighQuality());
-    juce::Component::SafePointer<NSynthAudioProcessorEditor> safeThis (this);
-    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (qualityButton), [safeThis] (int result)
-    {
-        if (safeThis == nullptr || result <= 0)
-            return;
-        if (result == offlineItem)
-            safeThis->synth.setOfflineHighQuality (! safeThis->synth.getOfflineHighQuality());
-        else
-            safeThis->synth.setOversamplingQuality (result);
-        safeThis->updateQualityButton();
-    });
-}
-
 void NSynthAudioProcessorEditor::refreshDisplay() noexcept
 {
     // Each dirty check compares the whole layer: once per refresh.
@@ -761,7 +737,6 @@ void NSynthAudioProcessorEditor::timerCallback()
         return;
     updateSwitchedControls();
     refreshControls();
-    updateQualityButton();
     const auto dropped = synth.getEngine().getDroppedMidiParameterChanges();
     if (dropped != lastMidiParameterDrops)
     {

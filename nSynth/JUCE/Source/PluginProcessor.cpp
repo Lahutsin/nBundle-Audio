@@ -110,36 +110,7 @@ void NSynthAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock
 #else
     constexpr int workers = -1;
 #endif
-    engine.prepare (sampleRate, samplesPerBlock, workers, chooseOversamplingFactor());
-    setLatencySamples ((int) std::lround (engine.getLatencySamples()));
-}
-
-int NSynthAudioProcessor::chooseOversamplingFactor() const noexcept
-{
-    return isNonRealtime() && offlineHighQuality.load() ? 4 : oversamplingQuality.load();
-}
-
-void NSynthAudioProcessor::setOversamplingQuality (int factor)
-{
-    oversamplingQuality = factor >= 4 ? 4 : factor >= 2 ? 2 : 1;
-    applyOversamplingChange();
-}
-
-void NSynthAudioProcessor::setOfflineHighQuality (bool enabled)
-{
-    offlineHighQuality = enabled;
-    applyOversamplingChange();
-}
-
-void NSynthAudioProcessor::applyOversamplingChange()
-{
-    // Re-prepares the engine with the audio callback held off (suspendProcessing takes the
-    // callback lock), so processBlock never sees half-resized buffers.
-    if (getSampleRate() <= 0.0 || chooseOversamplingFactor() == engine.getOversamplingFactor())
-        return;
-    suspendProcessing (true);
-    prepareToPlay (getSampleRate(), getBlockSize());
-    suspendProcessing (false);
+    engine.prepare (sampleRate, samplesPerBlock, workers);
 }
 
 void NSynthAudioProcessor::audioWorkgroupContextChanged (const juce::AudioWorkgroup& workgroup)
@@ -179,9 +150,6 @@ void NSynthAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
     bool needsMessageThread = engine.hasPendingMidiParameterChanges() || engine.hasPendingProgramChange();
     needsMessageThread = engine.takeGarbageNotice() || needsMessageThread;
-    const int latency = (int) std::lround (engine.getLatencySamples());
-    if (latency != getLatencySamples() && pendingLatency.exchange (latency) != latency)
-        needsMessageThread = true;
     if (needsMessageThread)
         triggerAsyncUpdate();
 }
@@ -192,8 +160,6 @@ void NSynthAudioProcessor::handleAsyncUpdate()
     while (engine.popMidiParameterChange (change))
         if (change.parameter != nullptr)
             change.parameter->setValueNotifyingHost (change.normalizedValue);
-    if (pendingLatency.load() != getLatencySamples())
-        setLatencySamples (pendingLatency.load());
 
     const int midiProgram = engine.takeProgramChange();
     if (midiProgram >= 0)
@@ -250,8 +216,6 @@ void NSynthAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
     engine.appendWaveBankState (state);
     engine.appendMidiInputState (state);
     state.setProperty ("editorScale", editorScale.load(), nullptr);
-    state.setProperty ("oversampling", oversamplingQuality.load(), nullptr);
-    state.setProperty ("offlineHQ", offlineHighQuality.load(), nullptr);
     state.setProperty ("presetName", currentPresetName, nullptr);
     state.setProperty ("presetKey", performanceKey, nullptr);
     state.setProperty ("upperPatch", patchNames[0], nullptr);
@@ -277,10 +241,6 @@ void NSynthAudioProcessor::setStateInformation (const void* data, int sizeInByte
         return;
 
     editorScale = (float) metadata.getProperty ("editorScale", 1.0f);
-    const int factor = (int) metadata.getProperty ("oversampling", SynthLayer::kDefaultOversamplingFactor);
-    oversamplingQuality = factor >= 4 ? 4 : factor >= 2 ? 2 : 1;
-    offlineHighQuality = (bool) metadata.getProperty ("offlineHQ", true);
-    applyOversamplingChange();
     currentPresetName = metadata.getProperty ("presetName", "Init").toString();
     performanceKey = metadata.getProperty ("presetKey", {}).toString();
     resetBaselines (metadata, "Session");
@@ -390,7 +350,7 @@ bool NSynthAudioProcessor::restoreFullState (juce::ValueTree tree, bool keepMast
         return false;
 
     removeLegacyChildren (tree);
-    // Display metadata of the file is not plugin state.
+    // Display metadata of the file is not plugin state (oversampling / offlineHQ: older sessions).
     for (auto property : { "name", "category", "presetKey", "presetName", "upperPatch", "lowerPatch", "editorScale",
                            "oversampling", "offlineHQ" })
         tree.removeProperty (property, nullptr);

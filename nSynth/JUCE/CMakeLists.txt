@@ -50,6 +50,8 @@ set(NSYNTH_CORE_SOURCES
   Source/Core/DSP/VoiceFilter.cpp
   Source/Core/DSP/Filter2.h
   Source/Core/DSP/Filter2.cpp
+  Source/Core/DSP/Halfband.h
+  Source/Core/DSP/Halfband.cpp
   Source/Core/DSP/Effects.h
   Source/Core/DSP/Effects.cpp
   Source/Core/Engine/LayerSnapshot.h

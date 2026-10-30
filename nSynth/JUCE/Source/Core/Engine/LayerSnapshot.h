@@ -5,7 +5,18 @@
 
 namespace nsynth
 {
-inline constexpr size_t kLayerParamCount = 160;
+inline constexpr size_t kLayerParamCount = 220;
+
+// MSEG settings default: the first value for MSEG 1, the second for every other one.
+template <typename T>
+constexpr std::array<T, kMaxMsegs> msegDefaults (T first, T others) noexcept
+{
+    std::array<T, kMaxMsegs> values {};
+    values[0] = first;
+    for (size_t i = 1; i < values.size(); ++i)
+        values[i] = others;
+    return values;
+}
 
 // Plain-value copy of one layer's parameters, refreshed once per audio block.
 struct LayerSnapshot
@@ -26,7 +37,9 @@ struct LayerSnapshot
     SuperMode superMode { SuperMode::off };
     float pwDetune { 0.0f }, pwmWave { 0.0f };
     PwmSource pwmSource { PwmSource::manual };
-    float crossMod { 0.0f }, drift { 0.0f };
+    float crossMod { 0.0f }, drift { 0.0f }, analog { 0.0f };
+    CrossModMode crossModMode { CrossModMode::exponential };
+    float eqLowQ { 0.7071068f }, eqHighQ { 0.7071068f };   // version 4
     // VCF
     float hpfHz { 10.0f }, lpfHz { 25000.0f }, res { 0.0f };
     Drive drive { Drive::off };
@@ -86,10 +99,11 @@ struct LayerSnapshot
 
     // ---- version 2 -----------------------------------------------------------------------
     std::array<float, 8> macros {};
-    std::array<MsegMode, 2> msegMode { MsegMode::envelope, MsegMode::loop };
-    std::array<bool, 2> msegSync { false, true };
-    std::array<float, 2> msegTime { 1.0f, 1.0f };
-    std::array<MsegDivision, 2> msegDivision { MsegDivision::bar1, MsegDivision::bar1 };
+    // MSEG 1 and 2 are version 2 parameters, MSEG 3..16 version 4.
+    std::array<MsegMode, kMaxMsegs> msegMode { msegDefaults (MsegMode::envelope, MsegMode::loop) };
+    std::array<bool, kMaxMsegs> msegSync { msegDefaults (false, true) };
+    std::array<float, kMaxMsegs> msegTime { msegDefaults (1.0f, 1.0f) };
+    std::array<MsegDivision, kMaxMsegs> msegDivision { msegDefaults (MsegDivision::bar1, MsegDivision::bar1) };
     Filter2Routing f2Routing { Filter2Routing::off };
     Filter2Type f2Type { Filter2Type::lp12 };
     float f2Cutoff { 2000.0f }, f2Res { 0.2f }, f2Env { 0.0f };

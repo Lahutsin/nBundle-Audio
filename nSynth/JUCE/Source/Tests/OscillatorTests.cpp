@@ -97,16 +97,16 @@ public:
             WrapEvent w;
             const float v = osc.process (sr / 8.0 / 100.0, s, rng, w); // phase advances by 1/800
             const double p = 1.0 / 800.0;
-            expectWithinAbsoluteError (v, bank.classic (2).read (MipWavetable::levelForIncrement (p), p), 1.0e-4f);
+            const auto blend = MipWavetable::blendForIncrement (p, MipWavetable::maxHarmonicFraction (sr));
+            expectWithinAbsoluteError (v, bank.classic (2).read (blend, p), 1.0e-4f);
 
             Dds1 alt; alt.setWaveBank (&bank); alt.setSampleRate (sr); alt.resetPhases();
             Dds1::Settings a; a.wave = Dds1Wave::alt; a.altA = 4; a.altB = 9; a.morph = 0.5f;
             const float m = alt.process (sr / 800.0, a, rng, w);
-            const int level = MipWavetable::levelForIncrement (p);
-            expectWithinAbsoluteError (m, 0.5f * (bank.alt (4).read (level, p) + bank.alt (9).read (level, p)), 1.0e-4f);
+            expectWithinAbsoluteError (m, 0.5f * (bank.alt (4).read (blend, p) + bank.alt (9).read (blend, p)), 1.0e-4f);
         }
 
-        beginTest ("DDS1 saw is alias-free in the audible band at 4x oversampling");
+        beginTest ("DDS1 saw is alias-free in the audible band at 176.4 kHz");
         {
             Dds1 osc; osc.setWaveBank (&bank); osc.setSampleRate (sr);
             Dds1::Settings s; s.wave = Dds1Wave::saw;
@@ -126,6 +126,25 @@ public:
             expectLessThan (toDb (inharmonic / harmonic), -90.0);
         }
 
+        beginTest ("DDS1 runs backwards through zero: a negative frequency keeps the pitch and its wraps");
+        {
+            Dds1 osc; osc.setWaveBank (&bank); osc.setSampleRate (sr); osc.resetPhases();
+            Dds1::Settings s; s.wave = Dds1Wave::sine;
+            std::vector<float> out ((size_t) sr);
+            int wraps = 0;
+            bool bounded = true;
+            for (auto& v : out)
+            {
+                WrapEvent w;
+                v = osc.process (-440.0, s, rng, w);
+                wraps += w.wrapped ? 1 : 0;
+                bounded = bounded && std::isfinite (v) && std::abs (v) <= 1.01f && w.fractionAfter >= 0.0f && w.fractionAfter <= 1.0f;
+            }
+            expect (bounded);
+            expectWithinAbsoluteError (zeroCrossingFrequency (out, sr), 440.0, 0.05);
+            expectWithinAbsoluteError (wraps, 440, 1);
+        }
+
         beginTest ("DDS2 phase resets to zero on every note");
         {
             Dds2 osc; osc.setSampleRate (sr);
@@ -135,8 +154,9 @@ public:
             for (int i = 0; i < 999; ++i) osc.process (500.0, Dds2Wave::saw, 0.5f, nullptr, rng);
             osc.noteOn();
             for (auto& v : b) v = osc.process (500.0, Dds2Wave::saw, 0.5f, nullptr, rng);
-            // the first output sample is the BLEP delay line's previous value; compare the rest
-            expect (std::equal (a.begin() + 1, a.end(), b.begin() + 1));
+            // the BLEP delay line still plays out the previous note (and its edges' look-ahead)
+            // for 2 x kLatency samples; compare the rest
+            expect (std::equal (a.begin() + 2 * Dds2::kLatency, a.end(), b.begin() + 2 * Dds2::kLatency));
         }
 
         beginTest ("DDS2 pulse width sets the duty cycle");
@@ -183,7 +203,8 @@ public:
                 v = sub.processSub (sine, master.centroidPhase(), w);
             }
             expectWithinAbsoluteError (zeroCrossingFrequency (out, sr, 100), 110.0, 0.05);
-            expectWithinAbsoluteError ((double) peak (out, 100), 1.0, sine ? 0.01 : 0.15);
+            // A band-limited square overshoots its edges by ~9 % of the jump of 2 (Gibbs).
+            expectWithinAbsoluteError ((double) peak (out, 100), 1.0, sine ? 0.01 : 0.2);
         }
 
         beginTest ("polyBLEP lowers DDS2 pulse aliasing versus a naive pulse");

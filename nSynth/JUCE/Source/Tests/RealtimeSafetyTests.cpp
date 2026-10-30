@@ -369,32 +369,6 @@ public:
             expect (level > 0.0f, "the note sounds in the block it starts in");
         }
 
-        beginTest ("oversampling quality 1x / 4x keeps the tuning and changes the reported latency");
-        {
-            for (int factor : { 1, 4 })
-            {
-                Rig rig;
-                const int standardLatency = rig.processor.getLatencySamples();
-                rig.processor.setOversamplingQuality (factor);
-                expectEquals (rig.processor.getEngine().getOversamplingFactor(), factor);
-                if (factor == 1)
-                    expectEquals (rig.processor.getLatencySamples(), 0);
-                else
-                    expect (rig.processor.getLatencySamples() != standardLatency);
-                rig.setLayer (Layer::upper, pid::binaural, 0.0f);
-                rig.setLayer (Layer::upper, pid::dds1Wave, (float) toInt (Dds1Wave::sine));
-                const auto out = rig.render (24064, { { 0, on (69) } });
-                expectWithinAbsoluteError (zeroCrossingFrequency (out, 48000.0, 4800), 440.0, 0.5);
-
-                juce::MemoryBlock state;
-                rig.processor.getStateInformation (state);
-                Rig restored;
-                restored.processor.setStateInformation (state.getData(), (int) state.getSize());
-                expectEquals (restored.processor.getOversamplingQuality(), factor);
-                expectEquals (restored.processor.getEngine().getOversamplingFactor(), factor);
-            }
-        }
-
         beginTest ("MASTER VOLUME changes ramp across the block instead of stepping");
         {
             Rig rig (512);

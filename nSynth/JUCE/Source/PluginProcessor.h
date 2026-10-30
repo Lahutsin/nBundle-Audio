@@ -89,13 +89,6 @@ public:
     bool canUndo() const;
     bool canRedo() const;
 
-    // Oversampling of the voices (session setting, not a host parameter): 1 (eco), 2 (standard)
-    // or 4 (high). Offline renders can use 4x regardless. Changing it re-prepares the engine.
-    int getOversamplingQuality() const noexcept { return oversamplingQuality.load(); }
-    void setOversamplingQuality (int factor);
-    bool getOfflineHighQuality() const noexcept { return offlineHighQuality.load(); }
-    void setOfflineHighQuality (bool enabled);
-
     // Editor size persistence (uniform scale factor) - deliberately not a host parameter.
     float getSavedEditorScale() const noexcept { return editorScale.load(); }
     void setSavedEditorScale (float s) noexcept { editorScale = s; }
@@ -159,13 +152,7 @@ private:
     FullState lastObservedState;
     static constexpr size_t kMaxUndoSteps = 100;
 
-    int chooseOversamplingFactor() const noexcept;
-    void applyOversamplingChange();
-
     std::atomic<float> editorScale { 1.0f };
-    std::atomic<int> oversamplingQuality { nsynth::SynthLayer::kDefaultOversamplingFactor };
-    std::atomic<bool> offlineHighQuality { true };
-    std::atomic<int> pendingLatency { 0 };
     std::atomic<int> currentProgram { 0 }, pendingProgram { -1 };
     std::array<std::atomic<int>, 2> activeVoices {};
 

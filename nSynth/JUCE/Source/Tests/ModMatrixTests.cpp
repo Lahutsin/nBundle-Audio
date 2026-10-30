@@ -161,6 +161,51 @@ public:
             expect (restored.getFxOrder() == ModMatrixData::defaultFxOrder());
         }
 
+        beginTest ("MSEGs: add up to 16, delete any (routes and later MSEGs move down), save and load the count");
+        {
+            ModMatrix matrix;
+            expectEquals (matrix.getMsegCount(), 2);
+            for (int m = 2; m < kMaxMsegs; ++m)
+                expectEquals (matrix.addMseg(), m);
+            expectEquals (matrix.addMseg(), -1);
+            expectEquals (msegIndexOf (msegSource (15)), 15);
+            expectEquals (msegIndexOf (ModSource::macro8), -1);
+
+            const int cutoff = findLayerSpecIndex (pid::lpf), mix = findLayerSpecIndex (pid::reverbMix);
+            matrix.setMseg (4, MsegShape::make (MsegShape::Preset::steps));
+            matrix.setMseg (5, MsegShape::make (MsegShape::Preset::square));
+            matrix.addRoute (msegSource (3), cutoff, 0.4f);   // deleted with MSEG 4
+            matrix.addRoute (msegSource (5), mix, 0.3f);      // becomes MSEG 5
+            matrix.addRoute (ModSource::mseg1, mix, 0.2f);    // stays
+            expect (matrix.removeMseg (3));
+            expectEquals (matrix.getMsegCount(), 15);
+            expect (matrix.getMseg (3) == MsegShape::make (MsegShape::Preset::steps));
+            expect (matrix.getMseg (4) == MsegShape::make (MsegShape::Preset::square));
+            expectEquals (matrix.getSlot (0).source, (int) msegSource (4));
+            expectEquals (matrix.getSlot (1).source, (int) ModSource::mseg1);
+            expect (matrix.getSlot (2).isEmpty());
+
+            ModMatrix restored;
+            expect (restored.restoreFromValueTree (matrix.toValueTree (0)));
+            expectEquals (restored.getMsegCount(), 15);
+            expect (restored.getMseg (4) == MsegShape::make (MsegShape::Preset::square));
+            expectEquals (restored.getSlot (0).source, (int) msegSource (4));
+
+            ModMatrix single;
+            while (single.getMsegCount() > 1)
+                expect (single.removeMseg (0));
+            expect (! single.removeMseg (0));   // the last one stays
+
+            // A schema 3 patch (before this change) has two MSEGs.
+            auto old = ModMatrix().toValueTree (0);
+            old.setProperty ("schemaVersion", 3, nullptr);
+            old.removeProperty ("msegCount", nullptr);
+            ModMatrix legacy;
+            legacy.addMseg();
+            expect (legacy.restoreFromValueTree (old));
+            expectEquals (legacy.getMsegCount(), 2);
+        }
+
         beginTest ("slot shaping and MSEG evaluation");
         {
             ModSlot slot { 0, 0, 1.0f, 0.0f, false };

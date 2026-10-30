@@ -21,8 +21,10 @@ CardLayout layoutFor (FxModule module)
         case FxModule::distortion:
             return { pid::distOn, 4, { pid::distType, pid::distDrive, pid::distTone, pid::distMix }, 96 };
         case FxModule::eq:
-            return { pid::eqOn, 4, { pid::eqLowFreq, pid::eqMidFreq, pid::eqMidQ, pid::eqHighFreq,
-                                     pid::eqLowGain, pid::eqMidGain, nullptr, pid::eqHighGain }, 70 };
+            // One column per band: low shelf, peak, high shelf.
+            return { pid::eqOn, 3, { pid::eqLowFreq, pid::eqMidFreq, pid::eqHighFreq,
+                                     pid::eqLowGain, pid::eqMidGain, pid::eqHighGain,
+                                     pid::eqLowQ, pid::eqMidQ, pid::eqHighQ }, 44 };
         case FxModule::compressor:
             return { pid::compOn, 4, { pid::compThreshold, pid::compRatio, pid::compAttack, pid::compRelease,
                                        pid::compMakeup, pid::compKey, pid::compMix, nullptr }, 22 };
@@ -53,7 +55,7 @@ constexpr int kMaxCellHeight = 104, kMaxCellWidth = 92;
 const std::vector<const char*>& curveParameters (FxModule module)
 {
     static const std::vector<const char*> eq { pid::eqLowFreq, pid::eqLowGain, pid::eqMidFreq, pid::eqMidGain,
-                                               pid::eqMidQ, pid::eqHighFreq, pid::eqHighGain };
+                                               pid::eqMidQ, pid::eqHighFreq, pid::eqHighGain, pid::eqLowQ, pid::eqHighQ };
     static const std::vector<const char*> distortion { pid::distType, pid::distDrive };
     static const std::vector<const char*> none;
     return module == FxModule::eq ? eq : module == FxModule::distortion ? distortion : none;
@@ -254,7 +256,7 @@ void FxCard::paintEqCurve (juce::Graphics& g, juce::Rectangle<float> area) const
         g.drawVerticalLine (juce::roundToInt (x), plot.getY(), plot.getBottom());
     }
     ThreeBandEq::Settings s { raw (pid::eqLowFreq), raw (pid::eqLowGain), raw (pid::eqMidFreq), raw (pid::eqMidGain),
-                              raw (pid::eqMidQ), raw (pid::eqHighFreq), raw (pid::eqHighGain) };
+                              raw (pid::eqMidQ), raw (pid::eqHighFreq), raw (pid::eqHighGain), raw (pid::eqLowQ), raw (pid::eqHighQ) };
     // The response at the processor's rate (the bands bend towards Nyquist), 48 kHz before prepare.
     const double processorRate = state.processor.getSampleRate();
     const double sampleRate = processorRate > 0.0 ? processorRate : 48000.0;

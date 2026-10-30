@@ -623,7 +623,7 @@ void ThreeBandEq::reset()
 
 ThreeBandEq::Biquad ThreeBandEq::design (int band, const Settings& s, double sampleRate) noexcept
 {
-    // RBJ cookbook; shelves with slope S = 1.
+    // RBJ cookbook; the shelves' Q sets their slope (1/sqrt(2) = slope S = 1, higher overshoots).
     const double hz = band == 0 ? s.lowHz : band == 1 ? s.midHz : s.highHz;
     const double db = band == 0 ? s.lowDb : band == 1 ? s.midDb : s.highDb;
     const double w0 = juce::MathConstants<double>::twoPi * juce::jlimit (10.0, 0.45 * sampleRate, hz) / sampleRate;
@@ -638,7 +638,7 @@ ThreeBandEq::Biquad ThreeBandEq::design (int band, const Settings& s, double sam
     }
     else
     {
-        const double alpha = sinw / 2.0 * std::sqrt (2.0);
+        const double alpha = sinw / (2.0 * juce::jmax (0.1, (double) (band == 0 ? s.lowQ : s.highQ)));
         const double k = 2.0 * std::sqrt (A) * alpha;
         const double sign = band == 0 ? -1.0 : 1.0;   // low shelf / high shelf
         b0 = A * ((A + 1.0) + sign * (A - 1.0) * cosw + k);
@@ -673,7 +673,7 @@ void ThreeBandEq::process (juce::AudioBuffer<float>& buffer, int start, int num,
     const auto same = [] (float a, float b) { return juce::exactlyEqual (a, b); };
     const bool changed = ! designed || ! same (s.lowHz, last.lowHz) || ! same (s.lowDb, last.lowDb) || ! same (s.midHz, last.midHz)
                       || ! same (s.midDb, last.midDb) || ! same (s.midQ, last.midQ) || ! same (s.highHz, last.highHz)
-                      || ! same (s.highDb, last.highDb);
+                      || ! same (s.highDb, last.highDb) || ! same (s.lowQ, last.lowQ) || ! same (s.highQ, last.highQ);
     if (changed)
     {
         for (int band = 0; band < 3; ++band)

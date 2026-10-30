@@ -192,6 +192,19 @@ void LayerParamReader::read (LayerSnapshot& o) const noexcept
     o.flangerDepth = f();
     o.flangerFeedback = f();
     o.flangerMix = f();
+
+    o.analog = f();
+    o.crossModMode = (CrossModMode) e();
+
+    o.eqLowQ = f();
+    o.eqHighQ = f();
+    for (size_t m = 2; m < (size_t) kMaxMsegs; ++m)
+    {
+        o.msegMode[m] = (MsegMode) e();
+        o.msegSync[m] = b();
+        o.msegTime[m] = f();
+        o.msegDivision[m] = (MsegDivision) e();
+    }
     jassert (idx == values.size());
 }
 
@@ -209,6 +222,7 @@ float* LayerSnapshot::floatField (int specIndex) noexcept
             { pid::modLfo1, offsetof (S, modLfo1) }, { pid::modEnv1, offsetof (S, modEnv1) },
             { pid::pwDetune, offsetof (S, pwDetune) }, { pid::pwmWave, offsetof (S, pwmWave) },
             { pid::crossMod, offsetof (S, crossMod) }, { pid::drift, offsetof (S, drift) },
+            { pid::analog, offsetof (S, analog) },
             { pid::hpf, offsetof (S, hpfHz) }, { pid::lpf, offsetof (S, lpfHz) }, { pid::res, offsetof (S, res) },
             { pid::vcfEnv, offsetof (S, vcfEnv) }, { pid::vcfLfo1, offsetof (S, vcfLfo1) }, { pid::vcfDds2, offsetof (S, vcfDds2) },
             { pid::vcaEnv, offsetof (S, vcaEnv) }, { pid::vcaLfo1, offsetof (S, vcaLfo1) }, { pid::vcaDds2, offsetof (S, vcaDds2) },
@@ -258,6 +272,7 @@ float* LayerSnapshot::floatField (int specIndex) noexcept
             { pid::phaserFeedback, offsetof (S, phaserFeedback) }, { pid::phaserMix, offsetof (S, phaserMix) },
             { pid::flangerRate, offsetof (S, flangerRate) }, { pid::flangerDepth, offsetof (S, flangerDepth) },
             { pid::flangerFeedback, offsetof (S, flangerFeedback) }, { pid::flangerMix, offsetof (S, flangerMix) },
+            { pid::eqLowQ, offsetof (S, eqLowQ) }, { pid::eqHighQ, offsetof (S, eqHighQ) },
         };
         for (const auto& [suffix, offset] : fields)
         {
@@ -266,6 +281,8 @@ float* LayerSnapshot::floatField (int specIndex) noexcept
             if (index >= 0)
                 table[(size_t) index] = (int) offset;
         }
+        for (int m = 2; m < kMaxMsegs; ++m)
+            table[(size_t) findLayerSpecIndex (msegSuffix (m, MsegField::time))] = (int) (offsetof (S, msegTime) + (size_t) m * sizeof (float));
         return table;
     }();
 

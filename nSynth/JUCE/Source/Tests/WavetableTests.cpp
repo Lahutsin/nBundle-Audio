@@ -86,17 +86,48 @@ public:
                         "wave " + juce::String (w) + " level " + juce::String (level) + " has harmonic " + juce::String (h));
             }
 
-        beginTest ("level selection never lets a harmonic exceed 0.45 * fs");
+        beginTest ("level selection: aliases stay above 20 kHz, and the brightest such level is used");
         for (double f : { 20.0, 110.0, 440.0, 1000.0, 3520.0, 8000.0, 15000.0 })
-            for (double sr : { 88200.0, 176400.0, 192000.0, 384000.0 })
+            for (double sr : { 44100.0, 48000.0, 88200.0, 176400.0, 192000.0, 384000.0 })
             {
-                const double inc = f / sr;
-                const int level = MipWavetable::levelForIncrement (inc);
-                const double topHarmonicFreq = (double) ((MipWavetable::kTableSize / 2) >> level) * f;
-                expect (topHarmonicFreq <= 0.45 * sr + 1.0e-6 || level == MipWavetable::kNumLevels - 1);
-                if (level > 0) // and the level is not needlessly dull
-                    expect ((double) ((MipWavetable::kTableSize / 2) >> (level - 1)) * f > 0.45 * sr);
+                const double limit = MipWavetable::maxHarmonicFraction (sr);
+                const auto blend = MipWavetable::blendForIncrement (f / sr, limit);
+                const double top = MipWavetable::harmonicsAt (blend.level) * f;
+                expect (top <= limit * sr + 1.0e-6 || blend.level == MipWavetable::kNumLevels - 1);
+                if (top > 0.5 * sr && blend.level < MipWavetable::kNumLevels - 1)
+                    expectGreaterOrEqual (sr - top, 20000.0 - 1.0e-6); // folds back above the audible band
+                if (blend.level > 0) // and the level is not needlessly dull
+                    expect (MipWavetable::harmonicsAt (blend.level - 1) * f > limit * sr);
             }
+
+        beginTest ("level blend: every harmonic's gain changes smoothly while the pitch sweeps");
+        for (double sr : { 44100.0, 48000.0, 96000.0 })
+        {
+            const double limit = MipWavetable::maxHarmonicFraction (sr);
+            auto gainOf = [] (const MipWavetable::Blend& b, int k)
+            {
+                float g = k <= MipWavetable::harmonicsAt (b.level) ? b.weight : 0.0f;
+                if (b.level + 1 < MipWavetable::kNumLevels && k <= MipWavetable::harmonicsAt (b.level + 1))
+                    g += 1.0f - b.weight;
+                return g;
+            };
+            float largestJump = 0.0f;
+            bool withinLimit = true;
+            auto previous = MipWavetable::blendForIncrement (10.0 / sr, limit);
+            for (double inc = 10.0 / sr; inc < 0.45; inc *= 1.0001)
+            {
+                const auto blend = MipWavetable::blendForIncrement (inc, limit);
+                for (int level = 0; level < MipWavetable::kNumLevels; ++level)
+                    for (int k : { MipWavetable::harmonicsAt (level), MipWavetable::harmonicsAt (level) + 1 })
+                    {
+                        largestJump = juce::jmax (largestJump, std::abs (gainOf (blend, k) - gainOf (previous, k)));
+                        withinLimit = withinLimit && (gainOf (blend, k) <= 0.0f || k == 1 || k * inc <= limit + 1.0e-9);
+                    }
+                previous = blend;
+            }
+            expectLessThan (largestJump, 0.01f, "sr " + juce::String (sr));
+            expect (withinLimit, "sr " + juce::String (sr));
+        }
 
         beginTest ("32 alternative waveforms: normalised and band-limited to fs/8");
         for (int i = 0; i < WaveBank::kNumAltWaves; ++i)

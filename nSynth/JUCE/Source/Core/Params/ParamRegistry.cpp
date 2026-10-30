@@ -45,6 +45,39 @@ constexpr auto Exp = Mapping::exponential;
 constexpr auto Skw = Mapping::skewed;
 
 const juce::StringArray tri3 { "Off", "1/2", "On" };
+const juce::StringArray msegDivisions { "1/16", "1/8", "1/4", "1/2", "1 Bar", "2 Bars", "4 Bars", "8 Bars" };
+const juce::StringArray msegModes { "Env", "Loop", "Free" };
+constexpr const char* msegModeNotes =
+    "Env: plays once from note-on and holds the end; Loop: restarts at note-on and repeats; Free: repeats on the layer clock.";
+
+// Suffixes and names of the MSEG parameters, built once (ParamSpec keeps plain pointers to them).
+struct MsegParameterNames
+{
+    std::array<std::array<std::string, 4>, kMaxMsegs> suffixes, names;
+};
+
+const MsegParameterNames& msegParameterNames()
+{
+    static const MsegParameterNames table = []
+    {
+        MsegParameterNames t;
+        const char* suffixes[] = { "mode", "sync", "time", "div" };
+        const char* names[] = { "Mode", "Sync", "Time", "Length" };
+        for (int m = 0; m < kMaxMsegs; ++m)
+            for (int f = 0; f < 4; ++f)
+            {
+                t.suffixes[(size_t) m][(size_t) f] = "mseg" + std::to_string (m + 1) + "_" + suffixes[f];
+                t.names[(size_t) m][(size_t) f] = "MSEG" + std::to_string (m + 1) + " " + names[f];
+            }
+        return t;
+    }();
+    return table;
+}
+
+const char* msegName (int index, MsegField field)
+{
+    return msegParameterNames().names[(size_t) index][(size_t) field].c_str();
+}
 const juce::StringArray oscTarget { "DDS 1", "1 + 2", "DDS 2" };
 
 std::vector<ParamSpec> buildLayerSpecs()
@@ -207,8 +240,6 @@ std::vector<ParamSpec> buildLayerSpecs()
 std::vector<ParamSpec> buildLayerSpecsV2()
 {
     using S = Section;
-    const juce::StringArray msegDivisions { "1/16", "1/8", "1/4", "1/2", "1 Bar", "2 Bars", "4 Bars", "8 Bars" };
-    const juce::StringArray msegModes { "Env", "Loop", "Free" };
     std::vector<ParamSpec> specs {
         // ---------------------------------------------------------------- Macros
         F (pid::macro1, "Macro 1", S::macros, 0.0f, 1.0f, 0.0f, Lin, 0, "", -1, "-", "Modulation source; assign it in the MOD page."),
@@ -221,16 +252,16 @@ std::vector<ParamSpec> buildLayerSpecsV2()
         F (pid::macro8, "Macro 8", S::macros, 0.0f, 1.0f, 0.0f, Lin, 0, "", -1, "-", "Modulation source; assign it in the MOD page."),
 
         // ---------------------------------------------------------------- MSEG 1 / 2
-        C (pid::mseg1Mode, "MSEG1 Mode", S::mseg1, msegModes, 0, -1, "-",
-           "Env: plays once from note-on and holds the end; Loop: restarts at note-on and repeats; Free: repeats on the layer clock."),
-        B (pid::mseg1Sync, "MSEG1 Sync", S::mseg1, false, -1, "-", "On: the cycle length follows the tempo."),
-        F (pid::mseg1Time, "MSEG1 Time", S::mseg1, 0.01f, 30.0f, 1.0f, Exp, 0, "s", -1, "-", "Length of one pass through the shape."),
-        C (pid::mseg1Division, "MSEG1 Length", S::mseg1, msegDivisions, 4, -1, "-"),
-        C (pid::mseg2Mode, "MSEG2 Mode", S::mseg2, msegModes, 1, -1, "-",
-           "Env: plays once from note-on and holds the end; Loop: restarts at note-on and repeats; Free: repeats on the layer clock."),
-        B (pid::mseg2Sync, "MSEG2 Sync", S::mseg2, true, -1, "-", "On: the cycle length follows the tempo."),
-        F (pid::mseg2Time, "MSEG2 Time", S::mseg2, 0.01f, 30.0f, 1.0f, Exp, 0, "s", -1, "-", "Length of one pass through the shape."),
-        C (pid::mseg2Division, "MSEG2 Length", S::mseg2, msegDivisions, 4, -1, "-"),
+        C (pid::mseg1Mode, "MSEG1 Mode", S::mseg, msegModes, 0, -1, "-",
+           msegModeNotes),
+        B (pid::mseg1Sync, "MSEG1 Sync", S::mseg, false, -1, "-", "On: the cycle length follows the tempo."),
+        F (pid::mseg1Time, "MSEG1 Time", S::mseg, 0.01f, 30.0f, 1.0f, Exp, 0, "s", -1, "-", "Length of one pass through the shape."),
+        C (pid::mseg1Division, "MSEG1 Length", S::mseg, msegDivisions, 4, -1, "-"),
+        C (pid::mseg2Mode, "MSEG2 Mode", S::mseg, msegModes, 1, -1, "-",
+           msegModeNotes),
+        B (pid::mseg2Sync, "MSEG2 Sync", S::mseg, true, -1, "-", "On: the cycle length follows the tempo."),
+        F (pid::mseg2Time, "MSEG2 Time", S::mseg, 0.01f, 30.0f, 1.0f, Exp, 0, "s", -1, "-", "Length of one pass through the shape."),
+        C (pid::mseg2Division, "MSEG2 Length", S::mseg, msegDivisions, 4, -1, "-"),
 
         // ---------------------------------------------------------------- Filter 2
         C (pid::filter2Routing, "Filter 2 Routing", S::filter2, { "Off", "Serial", "Parallel" }, 0, -1, "-",
@@ -301,6 +332,48 @@ std::vector<ParamSpec> buildLayerSpecsV2()
     return specs;
 }
 
+// Parameters added in version 3, after every version 2 parameter.
+std::vector<ParamSpec> buildLayerSpecsV3()
+{
+    using S = Section;
+    std::vector<ParamSpec> specs {
+        F (pid::analog, "Analog", S::ddsMod, 0.0f, 1.0f, 0.0f, Lin, 0, "", -1, "-",
+           "Component spread between voices and oscillator pitch noise. Each voice keeps its own tuning (DDS1 and DDS2 "
+           "+/-4 ct), cutoff (+/-0.12 oct), resonance (+/-6 %), level (+/-0.4 dB) and envelope times (+/-8 %); the "
+           "oscillators wander by ~1.5 ct RMS (1/f noise, 1.5-35 Hz). 0 = every voice identical."),
+        C (pid::crossModMode, "Cross Mod Mode", S::ddsMod, { "Exp", "Linear" }, 0, -1, "-",
+           "Exp: exponential FM (CROSS MOD = up to 4 octaves deviation; the pitch rises with the depth). Linear: "
+           "through-zero linear FM (index up to 8), stays in tune; the modulator is AC-coupled."),
+    };
+    for (auto& spec : specs)
+        spec.version = 3;
+    return specs;
+}
+
+// Parameters added in version 4: the EQ shelves' Q and the settings of MSEG 3..16.
+std::vector<ParamSpec> buildLayerSpecsV4()
+{
+    using S = Section;
+    std::vector<ParamSpec> specs {
+        F (pid::eqLowQ, "EQ Low Q", S::fxEq, 0.3f, 4.0f, 0.7071068f, Exp, 0, "Q", -1, "-",
+           "Low shelf slope: 0.707 = smooth, higher adds a dip and a bump around the corner."),
+        F (pid::eqHighQ, "EQ High Q", S::fxEq, 0.3f, 4.0f, 0.7071068f, Exp, 0, "Q", -1, "-",
+           "High shelf slope: 0.707 = smooth, higher adds a dip and a bump around the corner."),
+    };
+    for (int m = 2; m < kMaxMsegs; ++m)
+    {
+        specs.push_back (C (msegSuffix (m, MsegField::mode), msegName (m, MsegField::mode), S::mseg, msegModes, 1, -1, "-", msegModeNotes));
+        specs.push_back (B (msegSuffix (m, MsegField::sync), msegName (m, MsegField::sync), S::mseg, true, -1, "-",
+                            "On: the cycle length follows the tempo."));
+        specs.push_back (F (msegSuffix (m, MsegField::time), msegName (m, MsegField::time), S::mseg, 0.01f, 30.0f, 1.0f, Exp, 0, "s", -1, "-",
+                            "Length of one pass through the shape."));
+        specs.push_back (C (msegSuffix (m, MsegField::division), msegName (m, MsegField::division), S::mseg, msegDivisions, 4, -1, "-"));
+    }
+    for (auto& spec : specs)
+        spec.version = 4;
+    return specs;
+}
+
 std::vector<ParamSpec> buildPerformanceSpecs()
 {
     using S = Section;
@@ -330,6 +403,10 @@ const std::vector<ParamSpec>& getLayerParamSpecs()
     {
         auto all = buildLayerSpecs();
         for (auto& spec : buildLayerSpecsV2())
+            all.push_back (std::move (spec));
+        for (auto& spec : buildLayerSpecsV3())
+            all.push_back (std::move (spec));
+        for (auto& spec : buildLayerSpecsV4())
             all.push_back (std::move (spec));
         return all;
     }();
@@ -383,8 +460,7 @@ juce::String sectionName (Section s)
         case Section::reverb:      return "Reverb";
         case Section::performance: return "Performance";
         case Section::macros:      return "Macros";
-        case Section::mseg1:       return "MSEG 1";
-        case Section::mseg2:       return "MSEG 2";
+        case Section::mseg:        return "MSEG";
         case Section::filter2:     return "Filter 2";
         case Section::fxDistortion: return "Distortion";
         case Section::fxEq:        return "EQ";
@@ -393,6 +469,11 @@ juce::String sectionName (Section s)
         case Section::fxFlanger:   return "Flanger";
     }
     return {};
+}
+
+const char* msegSuffix (int index, MsegField field)
+{
+    return msegParameterNames().suffixes[(size_t) juce::jlimit (0, kMaxMsegs - 1, index)][(size_t) field].c_str();
 }
 
 juce::NormalisableRange<float> makeRange (const ParamSpec& spec)

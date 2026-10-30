@@ -156,8 +156,6 @@ public:
             expectWithinAbsoluteError (p.getState().getRawParameterValue (id)->load(), 1000.0f, 0.5f);
             expect (! ed->keyPressed (juce::KeyPress ('z', 0, 0)));
 
-            expect (ed->getQualityButton().getButtonText().contains (juce::String (p.getOversamplingQuality()) + "x"));
-
             auto& browser = ed->getPresetBrowser();
             browser.setKind (nSynth::PresetKind::performance);
             browser.onClosed();

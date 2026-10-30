@@ -10,23 +10,18 @@
 namespace nsynth
 {
 // One layer (UPPER or LOWER): note handling / voice assignment over the hardware
-// voices it currently owns, 2x oversampled rendering, pan, air shelf and the effect
+// voices it currently owns, rendering at the host rate, pan, air shelf and the effect
 // chain (eight modules in the patch's order).
 class SynthLayer
 {
 public:
-    static constexpr int kDefaultOversamplingFactor = 2;
     static constexpr int kMaxVoices = 128;
 
     SynthLayer (juce::AudioProcessorValueTreeState& state, Layer id);
     // Builds the lookup tables the audio code uses (call off the audio thread, before processing).
     static void initialiseStaticTables();
 
-    // oversamplingFactor: 1, 2 or 4 (the voices run at hostSampleRate x factor).
-    void prepare (double hostSampleRate, int maxBlockSize, VoiceRenderPool& renderPool,
-                  int oversamplingFactor = kDefaultOversamplingFactor);
-    int getOversamplingFactor() const noexcept { return oversamplingFactor; }
-    float getLatencySamples() const noexcept;
+    void prepare (double hostSampleRate, int maxBlockSize, VoiceRenderPool& renderPool);
 
     // Voices owned by this layer (changes with SINGLE/DUAL/SPLIT). Kills current notes.
     void assignVoices (Voice* first, int count);
@@ -61,7 +56,7 @@ public:
     // Velocity mode / curve applied to an incoming 0..1 note velocity.
     float shapeVelocity (float velocity) const noexcept;
 
-    // Downsample, pan, FX -> dest (stereo, host rate), in two steps so each layer's compressor can
+    // Pan, FX -> dest (stereo, host rate), in two steps so each layer's compressor can
     // key on the other layer: finishVoices() leaves the dry layer signal in getKeyBuffer(),
     // applyEffects() runs the chain.
     void finishVoices (int numHostSamples);
@@ -72,7 +67,7 @@ public:
     // applied (newest voice / layer effects), the MSEG play position of the newest voice
     // (-1 while silent) and the compressor's gain reduction.
     float getModulationOffset (int parameterIndex) const noexcept;
-    float getMsegPosition (int index) const noexcept { return uiMsegPhase[(size_t) juce::jlimit (0, 1, index)].load (std::memory_order_relaxed); }
+    float getMsegPosition (int index) const noexcept { return uiMsegPhase[(size_t) juce::jlimit (0, kMaxMsegs - 1, index)].load (std::memory_order_relaxed); }
     float getCompressorReductionDb() const noexcept { return uiCompReduction.load (std::memory_order_relaxed); }
 
     int getActiveVoiceCount() const noexcept;
@@ -124,7 +119,6 @@ private:
     bool sustainBeforeCommit { false };
     bool suspended { false };
     float suspendGain { 1.0f };
-    int oversamplingFactor { kDefaultOversamplingFactor };
     bool asleep { false };
     int quietSamples { 0 };
     void updateSleep (const juce::AudioBuffer<float>& output, int numHostSamples) noexcept;
@@ -145,12 +139,10 @@ private:
     double hostRate { 44100.0 };
     int maxBlock { 512 };
     VoiceRenderPool* renderPool { nullptr };
-    std::unique_ptr<juce::dsp::Oversampling<float>> oversampler;
     juce::AudioBuffer<float> hostScratch;
     juce::AudioBuffer<float> parallelScratch;
-    juce::dsp::AudioBlock<float> osBlock;
     double lfo2MasterPhase { 0.0 };
-    std::array<double, 2> msegMasterPhase {};
+    std::array<double, kMaxMsegs> msegMasterPhase {};
 
     AirShelf air;
     StereoChorus chorus;
@@ -172,7 +164,7 @@ private:
     juce::Random rng;
 
     std::array<std::atomic<float>, kLayerParamCount> uiModOffset {};
-    std::array<std::atomic<float>, 2> uiMsegPhase {};
+    std::array<std::atomic<float>, kMaxMsegs> uiMsegPhase {};
     std::atomic<float> uiCompReduction { 0.0f };
 };
 } // namespace nsynth

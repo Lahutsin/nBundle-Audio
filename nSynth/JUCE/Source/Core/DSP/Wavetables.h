@@ -9,17 +9,27 @@
 
 namespace nsynth
 {
-// Single-cycle wavetable with octave mip levels.
-// Level j keeps harmonics 1 .. (kTableSize/2 >> j). The oscillator picks the
-// lowest level whose highest harmonic stays below kMaxHarmonicFraction of the
-// (internal, oversampled) sample rate, so nothing folds back. See docs/03-DSP-SPEC.md §2.1.
+// Single-cycle wavetable with half-octave mip levels.
+// Level j keeps harmonics 1 .. harmonicsAt (j) (2048, 1448, 1024, 724, ..., 1). The oscillator
+// reads the brightest level whose highest harmonic stays below maxHarmonicFraction() of the
+// sample rate and fades into the next, darker level over the last kFadeOctaves before that
+// limit, so the brightness never steps while the pitch moves. See docs/03-DSP-SPEC.md §2.1.
 class MipWavetable
 {
 public:
     static constexpr int kTableSize = 4096;      // 4096-point single-cycle .ws6 format
-    static constexpr int kNumLevels = 12;        // 2048, 1024, ..., 1 harmonics
+    static constexpr int kNumLevels = 22;        // 2048, 1448, 1024, ..., 2, 1 harmonics
     static constexpr int kGuard = 3;             // extra points for 4-point interpolation
-    static constexpr float kMaxHarmonicFraction = 0.45f;
+    // Must stay below the smallest ratio between neighbouring levels (4 -> 3: 0.415 octave),
+    // otherwise the fade would not be finished when the next level takes over.
+    static constexpr double kFadeOctaves = 0.25;
+
+    // Two neighbouring levels: `weight` of `level`, 1 - weight of the darker `level + 1`.
+    struct Blend
+    {
+        int level { 0 };
+        float weight { 1.0f };
+    };
 
     // Builds all mip levels from complex harmonic amplitudes: real = cos part, imag = sin part.
     // harmonics[k] is harmonic k (index 0 = DC, ignored).
@@ -28,13 +38,18 @@ public:
     // Builds from one raw cycle of kTableSize samples (FFT -> harmonics -> mip levels).
     void buildFromCycle (const float* cycle, int maxHarmonic, bool normalisePeak);
 
-    static int levelForIncrement (double phaseIncrement) noexcept;
+    // Highest harmonic frequency a level may hold, as a fraction of the sample rate. A harmonic
+    // above fs/2 folds back to fs - f, which stays above 20 kHz up to (fs - 20 kHz) / fs.
+    static double maxHarmonicFraction (double sampleRate) noexcept;
+    static Blend blendForIncrement (double phaseIncrement, double maxHarmonicFraction) noexcept;
+    static int harmonicsAt (int level) noexcept;
 
     // phase in [0, 1). Cubic Hermite interpolation.
     float read (int level, double phase) const noexcept;
+    float read (const Blend& blend, double phase) const noexcept;
 
     const float* levelData (int level) const noexcept { return levels[(size_t) level].data(); }
-    int highestHarmonic (int level) const noexcept { return (kTableSize / 2) >> level; }
+    int highestHarmonic (int level) const noexcept { return harmonicsAt (level); }
 
 private:
     std::array<std::vector<float>, kNumLevels> levels;

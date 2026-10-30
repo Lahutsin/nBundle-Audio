@@ -21,7 +21,7 @@ public:
     static constexpr int kCentroid = 3;
 
     void setWaveBank (const WaveBank* bank) noexcept { waveBank = bank; }
-    void setSampleRate (double sr) noexcept { sampleRate = sr; }
+    void setSampleRate (double sr) noexcept;
 
     // Random free-running start phases (each physical oscillator has its own).
     void randomisePhases (juce::Random& rng) noexcept;
@@ -38,6 +38,7 @@ public:
     };
 
     // Called at note-on: SUPER 1/2 resets the DDS1 phase. Otherwise free-running.
+    // A negative frequency (through-zero linear FM) runs the oscillator backwards.
     void noteOn (SuperMode mode) noexcept;
 
     float process (double frequencyHz, const Settings& s, juce::Random& noise, WrapEvent& centroidWrap) noexcept;
@@ -52,10 +53,16 @@ public:
     static void coreGains (SuperMode mode, float& centroidGain, float& sisterGain) noexcept;
 
 private:
-    float readWave (Dds1Wave wave, int level, double phase, const Settings& s, float noiseSample) const noexcept;
+    float readWave (Dds1Wave wave, const MipWavetable::Blend& blend, double phase, const Settings& s, float noiseSample) const noexcept;
+    static void advance (double& phase, double inc, WrapEvent* wrap) noexcept;
+    const MipWavetable::Blend& blendFor (int core, double increment) noexcept;
 
     const WaveBank* waveBank { nullptr };
     double sampleRate { 44100.0 };
+    double harmonicLimit { MipWavetable::maxHarmonicFraction (44100.0) };
     std::array<double, kNumCores> phases {};
+    // Mip blend per core, recomputed only when the core's increment changes.
+    std::array<double, kNumCores> blendIncrement {};
+    std::array<MipWavetable::Blend, kNumCores> blends {};
 };
 } // namespace nsynth

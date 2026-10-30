@@ -26,10 +26,12 @@ juce::String shortCaption (const juce::String& name)
     if (name == "Comp Key") return "Key";
     if (name == "Delay Ping-Pong") return "Ping-Pong";
     if (name == "Reverb High Cut") return "High Cut";
-    for (auto prefix : { "Chorus ", "Delay ", "Reverb ", "Filter 2 ", "Distortion ", "Comp ", "Phaser ", "Flanger ",
-                         "EQ ", "MSEG1 ", "MSEG2 " })
+    for (auto prefix : { "Chorus ", "Delay ", "Reverb ", "Filter 2 ", "Distortion ", "Comp ", "Phaser ", "Flanger ", "EQ " })
         if (name.startsWith (prefix))
             return name.substring ((int) std::strlen (prefix));
+    // "MSEG<n> Time" -> "Time"
+    if (name.startsWith ("MSEG") && name.fromFirstOccurrenceOf ("MSEG", false, false).upToFirstOccurrenceOf (" ", false, false).containsOnly ("0123456789"))
+        return name.fromFirstOccurrenceOf (" ", false, false);
     return name;
 }
 
@@ -315,7 +317,12 @@ void ParamControl::resized()
     if (captionVisible)
         caption.setBounds (r.removeFromTop (13));
     if (slider != nullptr)
+    {
+        // A gap under the value text, so it never runs into the caption of the control below.
+        if (captionVisible && slider->getSliderStyle() == juce::Slider::RotaryHorizontalVerticalDrag)
+            r.removeFromBottom (juce::jlimit (2, 7, r.getHeight() / 9));
         slider->setBounds (r);
+    }
     else if (! choiceButtons.empty())
     {
         const int buttonWidth = r.getWidth() / (int) choiceButtons.size();
@@ -384,8 +391,9 @@ bool ModulationHost::isCentredSource (ModSource source) noexcept
 
 juce::String ModulationHost::sourceName (const ModMatrix& matrix, int source)
 {
-    return source >= (int) ModSource::macro1 ? matrix.getMacroName (source - (int) ModSource::macro1)
-                                             : juce::String (ModMatrix::getSourceName ((ModSource) source));
+    return source >= (int) ModSource::macro1 && source <= (int) ModSource::macro8
+               ? matrix.getMacroName (source - (int) ModSource::macro1)
+               : juce::String (ModMatrix::getSourceName ((ModSource) source));
 }
 
 int ModulationHost::findEmptySlot (const ModMatrix& matrix) noexcept
